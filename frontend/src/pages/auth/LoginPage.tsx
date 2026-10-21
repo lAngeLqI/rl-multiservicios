@@ -159,14 +159,7 @@ const LoginPage: React.FC = () => {
             />
           </div>
 
-          <div className="bg-gray-50 rounded-lg p-3 text-center text-xs text-gray-500 border border-gray-200">
-            <p className="font-semibold text-gray-700">🔑 Credenciales de prueba:</p>
-            <p>🎨 Diseñador: <strong>disenador@test.com</strong> / <strong>password123</strong></p>
-            <p>🖨️ Operador: <strong>operador@test.com</strong> / <strong>password123</strong></p>
-            <p>👑 Admin: <strong>admin@test.com</strong> / <strong>password123</strong></p>
-            <p className="text-gray-400 mt-1">💡 Copia y pega las credenciales para probar</p>
-          </div>
-
+        
           <button
             type="button"
             onClick={handleClick}
