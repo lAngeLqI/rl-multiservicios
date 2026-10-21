@@ -1,0 +1,378 @@
+// src/controllers/pedidoController.ts
+import { Request, Response } from 'express';
+import pool from '../config/database.js';
+import { AuthRequest } from '../middleware/auth.js';
+import { io } from '../server.js';
+import { uploadToDrive } from '../services/drive-googleapis-service.js';
+import fs from 'fs';
+
+// ========== CREAR PEDIDO ==========
+export const createPedido = async (req: AuthRequest, res: Response) => {
+    try {
+        const { nombre, fecha_entrega, prioridad, comentario_general } = req.body;
+        const disenador_id = req.userId;
+
+        if (!req.files || (req.files as Express.Multer.File[]).length === 0) {
+            return res.status(400).json({ 
+                success: false, 
+                message: 'Debes subir al menos un archivo' 
+            });
+        }
+
+        // 🔥 En Postgres usamos pool.connect() para transacciones
+        const client = await pool.connect();
+        
+        try {
+            await client.query('BEGIN');
+
+            // 1. Insertar pedido y obtener ID (RETURNING)
+            const pedidoResult = await client.query(
+                `INSERT INTO pedidos 
+                 (nombre, fecha_entrega, prioridad, comentario_general, disenador_id, estado) 
+                 VALUES ($1, $2, $3, $4, $5, 'pendiente') RETURNING id`,
+                [nombre, fecha_entrega, prioridad || 'media', comentario_general, disenador_id]
+            );
+
+            const pedidoId = pedidoResult.rows[0].id;
+            const archivosGuardados = [];
+            const files = req.files as Express.Multer.File[];
+            
+            // 2. Procesar y subir cada archivo a Drive
+            for (const file of files) {
+                try {
+                    console.log(`📤 Subiendo archivo a Drive: ${file.originalname}`);
+                    
+                    // 🔥 SUBIR A GOOGLE DRIVE (en lugar de guardar en disco local)
+                    const driveResult = await uploadToDrive(
+                        file.path,
+                        file.originalname,
+                        file.mimetype
+                    );
+                    
+                    console.log(`✅ Archivo subido a Drive: ${driveResult.url}`);
+
+                    const tamañoMb = (file.size / 1024 / 1024);
+
+                    // 🔥 GUARDAR EN BASE DE DATOS CON LA URL DE DRIVE
+                    const archivoResult = await client.query(
+                        `INSERT INTO archivos 
+                         (nombre_original, nombre_guardado, ruta, tamaño_mb, tipo, pedido_id, estado) 
+                         VALUES ($1, $2, $3, $4, $5, $6, 'listo') RETURNING id`,
+                        [
+                            file.originalname, 
+                            `drive_${Date.now()}_${file.originalname}`, 
+                            driveResult.url, // ✅ URL de Google Drive
+                            tamañoMb, 
+                            file.mimetype, 
+                            pedidoId
+                        ]
+                    );
+
+                    archivosGuardados.push({
+                        id: archivoResult.rows[0].id,
+                        nombre: file.originalname,
+                        tamaño: tamañoMb
+                    });
+
+                    // 🔥 ELIMINAR ARCHIVO TEMPORAL DEL SERVIDOR
+                    try {
+                        if (fs.existsSync(file.path)) {
+                            fs.unlinkSync(file.path);
+                        }
+                    } catch (unlinkError) {
+                        console.error('Error al eliminar archivo temporal:', unlinkError);
+                    }
+
+                } catch (error) {
+                    console.error('Error al procesar archivo:', error);
+                }
+            }
+
+            await client.query('COMMIT');
+
+            // 🔥 EVENTO WEBSOCKET
+            io.emit('nuevo-pedido', { 
+                pedidoId, 
+                disenador_id, 
+                mensaje: `📦 Nuevo pedido: ${nombre}` 
+            });
+
+            return res.status(201).json({
+                success: true,
+                message: 'Pedido creado exitosamente',
+                data: { pedidoId, archivos: archivosGuardados }
+            });
+
+        } catch (error) {
+            await client.query('ROLLBACK');
+            throw error;
+        } finally {
+            client.release();
+        }
+
+    } catch (error) {
+        console.error('Error en createPedido:', error);
+        return res.status(500).json({ 
+            success: false, 
+            message: 'Error al crear el pedido' 
+        });
+    }
+};
+
+// ========== OBTENER TODOS LOS PEDIDOS (Operador) ==========
+export const getPedidos = async (req: Request, res: Response) => {
+    try {
+        const { page = 1, limit = 10, estado, prioridad } = req.query;
+        const offset = (Number(page) - 1) * Number(limit);
+
+        let query = `
+            SELECT p.*, 
+                   d.nombre as disenador_nombre, 
+                   o.nombre as operador_nombre,
+                   (SELECT COUNT(*) FROM archivos WHERE pedido_id = p.id) as total_archivos
+            FROM pedidos p
+            LEFT JOIN usuarios d ON p.disenador_id = d.id
+            LEFT JOIN usuarios o ON p.operador_id = o.id
+            WHERE 1=1
+        `;
+
+        const params: any[] = [];
+        let paramIndex = 1;
+
+        if (estado) {
+            query += ` AND p.estado = $${paramIndex++}`;
+            params.push(estado);
+        }
+
+        if (prioridad) {
+            query += ` AND p.prioridad = $${paramIndex++}`;
+            params.push(prioridad);
+        }
+
+        query += ` ORDER BY p.created_at DESC LIMIT $${paramIndex++} OFFSET $${paramIndex++}`;
+        params.push(Number(limit), offset);
+
+        const result = await pool.query(query, params);
+
+        // Contar total
+        let countQuery = 'SELECT COUNT(*) as total FROM pedidos WHERE 1=1';
+        const countParams: any[] = [];
+        let countIndex = 1;
+
+        if (estado) { 
+            countQuery += ` AND estado = $${countIndex++}`; 
+            countParams.push(estado); 
+        }
+        if (prioridad) { 
+            countQuery += ` AND prioridad = $${countIndex++}`; 
+            countParams.push(prioridad); 
+        }
+
+        const countResult = await pool.query(countQuery, countParams);
+        const total = parseInt(countResult.rows[0].total);
+
+        return res.json({
+            success: true,
+            data: {
+                items: result.rows,
+                total: total,
+                page: Number(page),
+                totalPages: Math.ceil(total / Number(limit))
+            }
+        });
+
+    } catch (error) {
+        console.error('Error en getPedidos:', error);
+        return res.status(500).json({ 
+            success: false, 
+            message: 'Error al obtener pedidos' 
+        });
+    }
+};
+
+// ========== OBTENER PEDIDOS POR DISEÑADOR ==========
+export const getPedidosByDisenador = async (req: AuthRequest, res: Response) => {
+    try {
+        // 🔥 Usamos el ID del token (seguro, ignora el de la URL)
+        const userId = req.userId; 
+
+        const result = await pool.query(
+            `SELECT p.*, 
+                    (SELECT COUNT(*) FROM archivos WHERE pedido_id = p.id) as total_archivos
+             FROM pedidos p
+             WHERE p.disenador_id = $1
+             ORDER BY p.created_at DESC`,
+            [userId] 
+        );
+
+        return res.json({
+            success: true,
+            data: result.rows
+        });
+
+    } catch (error) {
+        console.error('Error en getPedidosByDisenador:', error);
+        return res.status(500).json({
+            success: false,
+            message: 'Error al obtener pedidos'
+        });
+    }
+};
+
+// ========== OBTENER PEDIDO POR ID ==========
+export const getPedidoById = async (req: Request, res: Response) => {
+    try {
+        const { id } = req.params;
+
+        const result = await pool.query(
+            `SELECT p.*, 
+                    d.nombre as disenador_nombre, 
+                    o.nombre as operador_nombre
+             FROM pedidos p
+             LEFT JOIN usuarios d ON p.disenador_id = d.id
+             LEFT JOIN usuarios o ON p.operador_id = o.id
+             WHERE p.id = $1`,
+            [id]
+        );
+
+        if (result.rows.length === 0) {
+            return res.status(404).json({ 
+                success: false, 
+                message: 'Pedido no encontrado' 
+            });
+        }
+
+        const archivosResult = await pool.query(
+            'SELECT * FROM archivos WHERE pedido_id = $1',
+            [id]
+        );
+
+        return res.json({
+            success: true,
+            data: { 
+                ...result.rows[0], 
+                archivos: archivosResult.rows 
+            }
+        });
+
+    } catch (error) {
+        console.error('Error en getPedidoById:', error);
+        return res.status(500).json({ 
+            success: false, 
+            message: 'Error al obtener el pedido' 
+        });
+    }
+};
+
+// ========== CAMBIAR ESTADO DEL PEDIDO ==========
+export const updateEstado = async (req: AuthRequest, res: Response) => {
+    try {
+        const { id } = req.params;
+        const { estado } = req.body;
+        const operadorId = req.userId;
+
+        const result = await pool.query(
+            'UPDATE pedidos SET estado = $1, operador_id = $2 WHERE id = $3',
+            [estado, operadorId, id]
+        );
+
+        if (result.rowCount === 0) {
+            return res.status(404).json({ 
+                success: false, 
+                message: 'Pedido no encontrado' 
+            });
+        }
+
+        io.emit('estado-cambiado', {
+            pedidoId: id,
+            nuevoEstado: estado,
+            mensaje: `🔄 Pedido #${id} cambiado a "${estado}"`
+        });
+
+        return res.json({ 
+            success: true, 
+            message: 'Estado actualizado correctamente' 
+        });
+
+    } catch (error) {
+        console.error('Error en updateEstado:', error);
+        return res.status(500).json({ 
+            success: false, 
+            message: 'Error al actualizar estado' 
+        });
+    }
+};
+
+// ========== APROBAR PEDIDO (Operador) ==========
+export const aprobarPedido = async (req: AuthRequest, res: Response) => {
+    try {
+        const { id } = req.params;
+
+        const result = await pool.query(
+            `UPDATE pedidos SET estado = 'aprobado' WHERE id = $1 AND estado = 'listo'`,
+            [id]
+        );
+
+        if (result.rowCount === 0) {
+            return res.status(400).json({ 
+                success: false, 
+                message: 'El pedido no está listo para aprobar o no existe' 
+            });
+        }
+
+        io.emit('estado-cambiado', {
+            pedidoId: id,
+            nuevoEstado: 'aprobado',
+            mensaje: `✅ Pedido #${id} aprobado`
+        });
+
+        return res.json({ 
+            success: true, 
+            message: 'Pedido aprobado correctamente' 
+        });
+
+    } catch (error) {
+        console.error('Error en aprobarPedido:', error);
+        return res.status(500).json({ 
+            success: false, 
+            message: 'Error al aprobar pedido' 
+        });
+    }
+};
+
+// ========== OBTENER ESTADÍSTICAS ==========
+export const getStats = async (_req: Request, res: Response) => {
+    try {
+        const result = await pool.query(`
+            SELECT 
+                COUNT(*) as total,
+                COUNT(*) FILTER (WHERE estado = 'pendiente') as pendientes,
+                COUNT(*) FILTER (WHERE estado = 'proceso') as en_proceso,
+                COUNT(*) FILTER (WHERE estado = 'impreso') as impresos,
+                COUNT(*) FILTER (WHERE estado = 'entregado') as entregados,
+                COUNT(*) FILTER (WHERE prioridad = 'urgente') as urgentes
+            FROM pedidos
+        `);
+
+        const stats = result.rows[0];
+
+        return res.json({
+            success: true,
+            data: {
+                total: parseInt(stats.total),
+                pendientes: parseInt(stats.pendientes),
+                en_proceso: parseInt(stats.en_proceso),
+                impresos: parseInt(stats.impresos),
+                entregados: parseInt(stats.entregados),
+                urgentes: parseInt(stats.urgentes)
+            }
+        });
+
+    } catch (error) {
+        console.error('Error en getStats:', error);
+        return res.status(500).json({ 
+            success: false, 
+            message: 'Error al obtener estadísticas' 
+        });
+    }
+};
