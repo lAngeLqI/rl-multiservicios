@@ -13,10 +13,19 @@ dotenv.config();
 const app = express();
 
 // Middleware
+const allowedOrigins = [
+    'http://localhost:5173',
+    'http://localhost:3000',
+    'tauri://localhost',
+    'http://tauri.localhost',
+    ...(process.env['CORS_ORIGINS']?.split(',').map(o => o.trim()) ?? []),
+];
+
 app.use(cors({
-    origin: ['http://localhost:5173', 'http://localhost:3000'],
+    origin: allowedOrigins,
     credentials: true
 }));
+
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 

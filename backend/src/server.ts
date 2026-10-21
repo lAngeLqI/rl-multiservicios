@@ -1,41 +1,38 @@
-// src/server.ts
+import 'dotenv/config';                   
 import app from './app.js';
-import dotenv from 'dotenv';
 import { Server as SocketServer } from 'socket.io';
 import http from 'http';
 import './config/drive-googleapis.js';
 
-dotenv.config();
-
 const PORT = process.env['PORT'] || 5005;
 
-// 🔥 CREAR SERVIDOR HTTP
+const allowedOrigins = [
+  'http://localhost:5173',      // Vite dev
+  'http://localhost:3000',      // Dev alternativo
+  'tauri://localhost',          // Tauri en macOS / Linux
+  'http://tauri.localhost',     // Tauri en Windows
+  ...(process.env['CORS_ORIGINS']?.split(',').map(o => o.trim()) ?? []),
+];
+
 const server = http.createServer(app);
 
-// 🔥 CONFIGURAR SOCKET.IO
 const io = new SocketServer(server, {
   cors: {
-    origin: ['http://localhost:5173', 'http://localhost:3000'],
+    origin: allowedOrigins,
     credentials: true,
   },
 });
 
-// 🔥 GUARDAR IO PARA USARLO EN OTROS ARCHIVOS
 export { io };
 
-// 🔥 EVENTOS DE SOCKET.IO
 io.on('connection', (socket) => {
   console.log('🔌 Cliente conectado:', socket.id);
-
   socket.on('disconnect', () => {
     console.log('🔌 Cliente desconectado:', socket.id);
   });
 });
 
-// 🔥 INICIAR SERVIDOR CON SOCKET.IO
 server.listen(PORT, () => {
-  console.log(`🚀 Servidor corriendo en http://localhost:${PORT}`);
-  console.log(`📁 Archivos estáticos en: ${process.env['UPLOAD_DIR'] || './uploads'}`);
-  console.log(`🔗 API Health: http://localhost:${PORT}/api/health`);
-  console.log(`🔌 WebSocket corriendo en ws://localhost:${PORT}`);
+  console.log(`🚀 Servidor corriendo en puerto ${PORT}`);
+  console.log(`🔗 API Health: /api/health`);
 });
