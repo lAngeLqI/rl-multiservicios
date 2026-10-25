@@ -37,76 +37,87 @@ export const createPedido = async (req: AuthRequest, res: Response) => {
                     const ext = path.extname(file.originalname).toLowerCase();
                     
                     // 🔥 PROCESAR ZIP
-                    if (ext === '.zip') {
-                        console.log(`📦 Procesando ZIP: ${file.originalname}`);
-                        
-                        const tempDir = path.resolve(uploadsDir, `temp_zip_${Date.now()}`);
-                        if (!fs.existsSync(tempDir)) fs.mkdirSync(tempDir, { recursive: true });
+                   if (ext === '.zip') {
+    
+                    console.log(`📦 Procesando ZIP: ${file.originalname}`);
+    
+    
+                    const tempDir = path.resolve(uploadsDir, `temp_zip_${Date.now()}`);
+    
+                    if (!fs.existsSync(tempDir)) fs.mkdirSync(tempDir, { recursive: true });
 
-                        const zip = new StreamZip.async({ file: file.path });
-                        await zip.extract(null, tempDir);
-                        await zip.close();
+    
+                    const zip = new StreamZip.async({ file: file.path });
+    
+                    await zip.extract(null, tempDir);
+    
+                    await zip.close();
 
-                        const archivosExtraidos: string[] = [];
+    
+                    const archivosExtraidos: string[] = [];
 
-                        // 🔥 FUNCIÓN PARA RECORRER CARPETAS DEL ZIP
-                        const recorrerCarpeta = (dir: string) => {
-                            const archivos = fs.readdirSync(dir);
-                            
-                            for (const archivo of archivos) {
-                                const fullPath = path.join(dir, archivo);
-                                const stat = fs.statSync(fullPath);
+                    const recorrerCarpeta = (dir: string) => {
+                        const elementos = fs.readdirSync(dir, { withFileTypes: true });
+                        for (const elemento of elementos) {
+            
+                            const fullPath = path.join(dir, elemento.name);
+                            if (elemento.isDirectory()) {
 
-                                if (stat.isDirectory()) {
-                                    recorrerCarpeta(fullPath);
-                                } else {
-                                    const fileNameInsideZip = path.basename(fullPath);
-                                    if (fileNameInsideZip.startsWith('__MACOSX') || fileNameInsideZip.startsWith('.')) continue;
-                                    archivosExtraidos.push(fullPath);
-                                }
+                                recorrerCarpeta(fullPath);
+                            } else {
+                                if (elemento.name.startsWith('__MACOSX') || elemento.name.startsWith('.')) continue;               
+                                archivosExtraidos.push(fullPath);
                             }
-                        };
-
-                        recorrerCarpeta(tempDir);
-                        const resultadosArchivos = [];
-
-                        // Procesamos cada archivo encontrado
-                        for (const fullPath of archivosExtraidos) {
-                            const fileNameInsideZip = path.basename(fullPath);
-                            console.log(`📤 Subiendo desde ZIP a Drive: ${fileNameInsideZip}`);
-
-                            const driveResult = await uploadToDrive(fullPath, fileNameInsideZip, 'application/octet-stream');
-                            
-                            const stats = fs.statSync(fullPath);
-                            const tamañoMb = stats.size / 1024 / 1024;
-
-                            const archivoResult = await client.query(
-                                `INSERT INTO archivos 
-                                 (nombre_original, nombre_guardado, ruta, tamaño_mb, tipo, pedido_id, estado, created_at) 
-                                 VALUES ($1, $2, $3, $4, $5, $6, 'listo', NOW() AT TIME ZONE 'America/Lima') RETURNING id`,
-                                [
-                                    fileNameInsideZip, 
-                                    `drive_${Date.now()}_${fileNameInsideZip}`, 
-                                    driveResult.url, 
-                                    tamañoMb, 
-                                    'application/octet-stream', 
-                                    pedidoId
-                                ]
-                            );
-
-                            resultadosArchivos.push({ 
-                                id: archivoResult.rows[0].id, 
-                                nombre: fileNameInsideZip, 
-                                tamaño: tamañoMb 
-                            });
                         }
+                    };
 
-                        // Limpieza
-                        fs.rmSync(tempDir, { recursive: true, force: true });
-                        if (fs.existsSync(file.path)) fs.unlinkSync(file.path);
-                        
-                        console.log(`✅ ZIP procesado: ${resultadosArchivos.length} archivos guardados.`);
-                        return resultadosArchivos;
+                    recorrerCarpeta(tempDir);
+                    const resultadosArchivos = [];
+                    for (const fullPath of archivosExtraidos) {
+                        const fileNameInsideZip = path.basename(fullPath);
+                        console.log(`📤 Subiendo desde ZIP a Drive: ${fileNameInsideZip}`);
+
+                        try {
+            
+                            // 1. Subir a Drive
+                            const driveResult = await uploadToDrive(fullPath, fileNameInsideZip, 'application/octet-stream');
+
+            // 2. Tamaño (ya no usamos statSync, usamos el size de la subida o lo calculamos)
+            // Como ya sabemos que existe, lo leemos de forma segura
+            const stats = fs.statSync(fullPath); 
+            const tamañoMb = stats.size / 1024 / 1024;
+
+            // 3. Guardar en Supabase
+            const archivoResult = await client.query(
+                `INSERT INTO archivos 
+                 (nombre_original, nombre_guardado, ruta, tamaño_mb, tipo, pedido_id, estado, created_at) 
+                 VALUES ($1, $2, $3, $4, $5, $6, 'listo', NOW() AT TIME ZONE 'America/Lima') RETURNING id`,
+                [
+                    fileNameInsideZip, 
+                    `drive_${Date.now()}_${fileNameInsideZip}`, 
+                    driveResult.url, 
+                    tamañoMb, 
+                    'application/octet-stream', 
+                    pedidoId
+                ]
+            );
+
+            resultadosArchivos.push({ 
+                id: archivoResult.rows[0].id, 
+                nombre: fileNameInsideZip, 
+                tamaño: tamañoMb 
+            });
+        } catch (err) {
+            console.error(`❌ Error subiendo ${fileNameInsideZip}:`, err);
+        }
+    }
+
+    // Limpieza
+    fs.rmSync(tempDir, { recursive: true, force: true });
+    if (fs.existsSync(file.path)) fs.unlinkSync(file.path);
+    
+    console.log(`✅ ZIP procesado: ${resultadosArchivos.length} archivos guardados.`);
+    return resultadosArchivos;
 
                     } else {
                         // 🔥 PROCESAR ARCHIVO NORMAL
@@ -163,6 +174,7 @@ export const createPedido = async (req: AuthRequest, res: Response) => {
         return res.status(500).json({ success: false, message: 'Error al crear el pedido' });
     }
 };
+
 
 // ========== OBTENER TODOS LOS PEDIDOS (Operador) ==========
 export const getPedidos = async (req: Request, res: Response) => {
@@ -241,7 +253,7 @@ export const getPedidosByDisenador = async (req: AuthRequest, res: Response) => 
                     (SELECT COUNT(*) FROM archivos WHERE pedido_id = p.id) as total_archivos
              FROM pedidos p
              WHERE p.disenador_id = $1
-             ORDER BY p.created_at DESC`,
+             ORDER BY p.created_at DESC`, 
             [userId] 
         );
 
