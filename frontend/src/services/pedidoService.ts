@@ -5,9 +5,11 @@ export const pedidoService = {
   // ========== CREAR PEDIDO (con archivos) ==========
   createPedido: async (formData: FormData, onProgress?: (progress: number) => void) => {
     const response = await api.post('/pedidos', formData, {
+      // 🔥 FORZAMOS EL TIPO DE CONTENIDO PARA QUE MULTER EN EL BACKEND LO ENTIENDA
       headers: {
         'Content-Type': 'multipart/form-data',
       },
+      timeout: 0, // 🔥 0 significa SIN LÍMITE DE TIEMPO (crucial para ZIPs grandes)
       onUploadProgress: (progressEvent) => {
         if (onProgress && progressEvent.total) {
           const percent = Math.round((progressEvent.loaded * 100) / progressEvent.total);

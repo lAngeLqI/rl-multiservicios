@@ -1,7 +1,7 @@
 // src/pages/disenador/NuevoPedido.tsx
 import React, { useState } from 'react';
 import { useDropzone } from 'react-dropzone';
-import type { FileRejection } from 'react-dropzone';  // ← Importación de tipo
+import type { FileRejection } from 'react-dropzone';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
 import { useNotification } from '../../context/NotificationContext';
@@ -42,7 +42,7 @@ const NuevoPedido: React.FC = () => {
       const errores = fileRejections.map((rejection: FileRejection) => {
         const error = rejection.errors[0];
         if (error?.code === 'file-invalid-type') {
-          return `${rejection.file.name}: Formato no soportado (solo TIFF, PSD, AI, PDF, PNG, JPG)`;
+          return `${rejection.file.name}: Formato no soportado (solo TIFF, PSD, AI, PDF, PNG, JPG, ZIP)`;
         }
         if (error?.code === 'file-too-large') {
           return `${rejection.file.name}: Excede los 500MB`;
@@ -57,6 +57,8 @@ const NuevoPedido: React.FC = () => {
       'image/png': ['.png'],
       'application/pdf': ['.pdf'],
       'application/postscript': ['.psd', '.ai'],
+      'application/zip': ['.zip'], // 🔥 AGREGADO PARA ACEPTAR ZIP
+      'application/x-zip-compressed': ['.zip'], // 🔥 POR SI WINDOWS LO DETECTA ASÍ
     },
     maxSize: 500 * 1024 * 1024,
     maxFiles: 20,
@@ -205,7 +207,7 @@ const NuevoPedido: React.FC = () => {
               <p className="text-gray-600 font-medium">
                 {isDragActive ? '📥 Suelta los archivos aquí' : 'Arrastra o haz clic para subir archivos'}
               </p>
-              <p className="text-sm text-gray-400">Formatos: TIFF, PSD, AI, PDF, PNG, JPG | Máx. 500MB</p>
+              <p className="text-sm text-gray-400">Formatos: TIFF, PSD, AI, PDF, PNG, JPG, ZIP | Máx. 500MB</p>
               <div className="flex justify-center gap-4 text-xs text-gray-400">
                 <span>✅ Alta calidad</span>
                 <span>✅ Sin compresión</span>
@@ -230,7 +232,8 @@ const NuevoPedido: React.FC = () => {
                   const icon = extension === 'tiff' || extension === 'tif' ? '🖼️' :
                               extension === 'psd' ? '🎨' :
                               extension === 'ai' ? '📐' :
-                              extension === 'pdf' ? '📕' : '📄';
+                              extension === 'pdf' ? '📕' : 
+                              extension === 'zip' ? '📦' : '📄'; // 🔥 ICONO PARA ZIP
 
                   return (
                     <div key={index} className="flex items-center justify-between bg-gray-50 p-3 rounded-lg hover:bg-gray-100 transition">
@@ -278,7 +281,7 @@ const NuevoPedido: React.FC = () => {
           <p className="text-sm text-yellow-700 flex items-start gap-2">
             <span className="text-lg">💡</span>
             <span>
-              <strong>Formato recomendado:</strong> Usa archivos TIFF sin compresión, en modo CMYK y a 300 DPI para garantizar la mejor calidad en la impresión de gigantografías.
+              <strong>Formato recomendado:</strong> Usa archivos TIFF sin compresión, en modo CMYK y a 300 DPI para garantizar la mejor calidad en la impresión de gigantografías. También puedes empaquetar varios archivos en un <strong>.ZIP</strong> para subirlos más rápido.
             </span>
           </p>
         </div>
