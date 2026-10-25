@@ -1,4 +1,5 @@
 // src/controllers/pedidoController.ts
+// src/controllers/pedidoController.ts
 import { Request, Response } from 'express';
 import pool from '../config/database.js';
 import { AuthRequest } from '../middleware/auth.js';
@@ -7,6 +8,7 @@ import { uploadToDrive } from '../services/drive-googleapis-service.js';
 import fs from 'fs';
 import path from 'path';
 import StreamZip from 'node-stream-zip';
+import sharp from 'sharp'; // 🔥 IMPORTANTE: Para crear las miniaturas
 
 // ========== CREAR PEDIDO ==========
 export const createPedido = async (req: AuthRequest, res: Response) => {
@@ -35,8 +37,6 @@ export const createPedido = async (req: AuthRequest, res: Response) => {
 
             const pedidoId = pedidoResult.rows[0].id;
             const files = req.files as Express.Multer.File[];
-            
-            // 🔥 Usamos una ruta absoluta para evitar problemas en Render
             const uploadsDir = path.resolve(process.env['UPLOAD_DIR'] || './uploads');
 
             const uploadPromises = files.map(async (file) => {
@@ -45,108 +45,117 @@ export const createPedido = async (req: AuthRequest, res: Response) => {
                     
                     // 🔥 SI ES UN ZIP
                     if (ext === '.zip') {
-                        console.log(`📦 Procesando archivo ZIP en streaming: ${file.originalname}`);
-                        
+                        console.log(`📦 Procesando ZIP: ${file.originalname}`);
                         const zip = new StreamZip.async({ file: file.path });
                         const entries = await zip.entries();
                         const archivosExtraidos = [];
 
                         for (const entry of Object.values(entries)) {
-                            if (entry.isDirectory || entry.name.includes('__MACOSX') || entry.name.startsWith('.')) {
-                                continue;
-                            }
+                            if (entry.isDirectory || entry.name.includes('__MACOSX') || entry.name.startsWith('.')) continue;
 
                             const fileNameInsideZip = path.basename(entry.name);
-                            // 🔥 Usamos path.resolve para garantizar la ruta absoluta en Render
                             const tempExtractPath = path.resolve(uploadsDir, `${Date.now()}_${fileNameInsideZip}`);
 
-                            console.log(`📤 Extrayendo y subiendo a Drive: ${fileNameInsideZip}`);
-                            
-                            // Extraemos al disco
                             await zip.extract(entry.name, tempExtractPath);
+                            if (!fs.existsSync(tempExtractPath)) continue;
 
-                            // 🔥 Verificamos si el archivo realmente existe antes de leerlo
-                            if (!fs.existsSync(tempExtractPath)) {
-                                console.error(`❌ El archivo extraído no existe en: ${tempExtractPath}`);
-                                continue;
+                            // 1. Subir original a Drive
+                            const driveResult = await uploadToDrive(tempExtractPath, fileNameInsideZip, 'application/octet-stream');
+
+                            // 2. Generar Miniatura (Preview)
+                            let previewUrl = null;
+                            try {
+                                const previewBuffer = await sharp(tempExtractPath)
+                                    .resize(800, null, { fit: 'inside', withoutEnlargement: true })
+                                    .jpeg({ quality: 80 })
+                                    .toBuffer();
+
+                                const previewPath = `${tempExtractPath}_preview.jpg`;
+                                fs.writeFileSync(previewPath, previewBuffer);
+                                
+                                const previewDriveResult = await uploadToDrive(previewPath, `preview_${fileNameInsideZip}.jpg`, 'image/jpeg');
+                                previewUrl = previewDriveResult.url;
+                                fs.unlinkSync(previewPath);
+                            } catch (err) {
+                                console.warn(`⚠️ No se pudo crear miniatura para ${fileNameInsideZip}`);
                             }
 
-                            // Subimos a Drive
-                            const driveResult = await uploadToDrive(
-                                tempExtractPath,
-                                fileNameInsideZip,
-                                'application/octet-stream'
-                            );
-
-                            // Leemos el tamaño
                             const stats = fs.statSync(tempExtractPath);
                             const tamañoMb = stats.size / 1024 / 1024;
 
+                            // 3. Guardar en Supabase (Original + Preview)
                             const archivoResult = await client.query(
                                 `INSERT INTO archivos 
-                                 (nombre_original, nombre_guardado, ruta, tamaño_mb, tipo, pedido_id, estado) 
-                                 VALUES ($1, $2, $3, $4, $5, $6, 'listo') RETURNING id`,
+                                 (nombre_original, nombre_guardado, ruta, ruta_preview, tamaño_mb, tipo, pedido_id, estado) 
+                                 VALUES ($1, $2, $3, $4, $5, $6, $7, 'listo') RETURNING id`,
                                 [
                                     fileNameInsideZip, 
                                     `drive_${Date.now()}_${fileNameInsideZip}`, 
                                     driveResult.url, 
+                                    previewUrl, // 🔥 URL de la miniatura
                                     tamañoMb, 
                                     'application/octet-stream', 
                                     pedidoId
                                 ]
                             );
 
-                            archivosExtraidos.push({
-                                id: archivoResult.rows[0].id,
-                                nombre: fileNameInsideZip,
-                                tamaño: tamañoMb
-                            });
-
-                            // Borrar archivo temporal extraído
+                            archivosExtraidos.push({ id: archivoResult.rows[0].id, nombre: fileNameInsideZip, tamaño: tamañoMb });
                             if (fs.existsSync(tempExtractPath)) fs.unlinkSync(tempExtractPath);
                         }
 
                         await zip.close();
                         if (fs.existsSync(file.path)) fs.unlinkSync(file.path);
-                        
                         return archivosExtraidos;
 
                     } else {
                         // 🔥 ARCHIVO NORMAL
-                        console.log(`📤 Subiendo archivo a Drive: ${file.originalname}`);
+                        console.log(`📤 Subiendo archivo: ${file.originalname}`);
                         
-                        const driveResult = await uploadToDrive(
-                            file.path,
-                            file.originalname,
-                            file.mimetype
-                        );
+                        // 1. Subir original
+                        const driveResult = await uploadToDrive(file.path, file.originalname, file.mimetype);
+
+                        // 2. Generar Miniatura
+                        let previewUrl = null;
+                        try {
+                            const previewBuffer = await sharp(file.path)
+                                .resize(800, null, { fit: 'inside', withoutEnlargement: true })
+                                .jpeg({ quality: 80 })
+                                .toBuffer();
+
+                            const previewPath = `${file.path}_preview.jpg`;
+                            fs.writeFileSync(previewPath, previewBuffer);
+
+                            const previewDriveResult = await uploadToDrive(previewPath, `preview_${file.originalname}.jpg`, 'image/jpeg');
+                            previewUrl = previewDriveResult.url;
+                            fs.unlinkSync(previewPath);
+                        } catch (err) {
+                            console.warn(`⚠️ No se pudo crear miniatura para ${file.originalname}`);
+                        }
 
                         const tamañoMb = (file.size / 1024 / 1024);
 
+                        // 3. Guardar en Supabase
                         const archivoResult = await client.query(
                             `INSERT INTO archivos 
-                             (nombre_original, nombre_guardado, ruta, tamaño_mb, tipo, pedido_id, estado) 
-                             VALUES ($1, $2, $3, $4, $5, $6, 'listo') RETURNING id`,
+                             (nombre_original, nombre_guardado, ruta, ruta_preview, tamaño_mb, tipo, pedido_id, estado) 
+                             VALUES ($1, $2, $3, $4, $5, $6, $7, 'listo') RETURNING id`,
                             [
                                 file.originalname, 
                                 `drive_${Date.now()}_${file.originalname}`, 
                                 driveResult.url, 
+                                previewUrl, // 🔥 URL de la miniatura
                                 tamañoMb, 
                                 file.mimetype, 
                                 pedidoId
                             ]
                         );
 
-                        return [{
-                            id: archivoResult.rows[0].id,
-                            nombre: file.originalname,
-                            tamaño: tamañoMb
-                        }];
+                        return [{ id: archivoResult.rows[0].id, nombre: file.originalname, tamaño: tamañoMb }];
                     }
 
                 } catch (error) {
                     console.error(`❌ Error procesando archivo ${file.originalname}:`, error);
-                    if (fs.existsSync(file.path)) fs.unlinkSync(file.path); 
+                    if (fs.existsSync(file.path)) fs.unlinkSync(file.path);
                     return [];
                 }
             });
@@ -156,11 +165,7 @@ export const createPedido = async (req: AuthRequest, res: Response) => {
 
             await client.query('COMMIT');
 
-            io.emit('nuevo-pedido', { 
-                pedidoId, 
-                disenador_id, 
-                mensaje: `📦 Nuevo pedido: ${nombre}` 
-            });
+            io.emit('nuevo-pedido', { pedidoId, disenador_id, mensaje: `📦 Nuevo pedido: ${nombre}` });
 
             return res.status(201).json({
                 success: true,
@@ -174,15 +179,13 @@ export const createPedido = async (req: AuthRequest, res: Response) => {
         } finally {
             client.release();
         }
-
     } catch (error) {
         console.error('Error en createPedido:', error);
-        return res.status(500).json({ 
-            success: false, 
-            message: 'Error al crear el pedido' 
-        });
+        return res.status(500).json({ success: false, message: 'Error al crear el pedido' });
     }
 };
+
+// ... EL RESTO DE TUS FUNCIONES (getPedidos, getPedidoById, etc.) SE MANTIENEN IGUAL ...
 
 // ... El resto de tus funciones (getPedidos, etc.) se mantienen igual ...
 
