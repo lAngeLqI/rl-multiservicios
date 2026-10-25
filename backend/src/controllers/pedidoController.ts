@@ -48,21 +48,26 @@ export const createPedido = async (req: AuthRequest, res: Response) => {
                             if (entry.isDirectory || entry.name.includes('__MACOSX') || entry.name.startsWith('.')) continue;
 
                             const fileNameInsideZip = path.basename(entry.name);
-                            // 🔥 Ruta plana temporal (sin subcarpetas)
                             const tempExtractPath = path.resolve(uploadsDir, `temp_${Date.now()}_${fileNameInsideZip}`);
 
-                            // Extraemos el archivo específico
+                            // Extraemos el archivo
                             await zip.extract(entry.name, tempExtractPath);
                             
-                            if (!fs.existsSync(tempExtractPath)) continue;
+                            // 🔥 CALCULAMOS EL TAMAÑO USANDO EL ZIP (Evita statSync)
+                            const tamañoMb = entry.size / 1024 / 1024;
+
+                            if (!fs.existsSync(tempExtractPath)) {
+                                console.warn(`⚠️ Archivo extraído no encontrado: ${fileNameInsideZip}`);
+                                continue;
+                            }
 
                             try {
                                 console.log(`📤 Subiendo desde ZIP a Drive: ${fileNameInsideZip}`);
                                 
+                                // Subir a Drive
                                 const driveResult = await uploadToDrive(tempExtractPath, fileNameInsideZip, 'application/octet-stream');
-                                const stats = fs.statSync(tempExtractPath);
-                                const tamañoMb = stats.size / 1024 / 1024;
 
+                                // Guardar en Supabase
                                 const archivoResult = await client.query(
                                     `INSERT INTO archivos 
                                      (nombre_original, nombre_guardado, ruta, tamaño_mb, tipo, pedido_id, estado, created_at) 
@@ -82,9 +87,11 @@ export const createPedido = async (req: AuthRequest, res: Response) => {
                                     nombre: fileNameInsideZip, 
                                     tamaño: tamañoMb 
                                 });
+                                console.log(`✅ Guardado en BD: ${fileNameInsideZip}`);
                             } catch (err) {
-                                console.error(`❌ Error subiendo ${fileNameInsideZip}:`, err);
+                                console.error(`❌ Error guardando ${fileNameInsideZip} en BD/Drive:`, err);
                             } finally {
+                                // Limpiar archivo temporal
                                 if (fs.existsSync(tempExtractPath)) fs.unlinkSync(tempExtractPath);
                             }
                         }
