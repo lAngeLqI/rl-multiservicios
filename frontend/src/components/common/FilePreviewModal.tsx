@@ -6,6 +6,7 @@ interface FilePreviewModalProps {
   onClose: () => void;
   fileId: number;
   fileName: string;
+  previewUrl?: string; // 🔥 NUEVA PROP: URL de la miniatura generada al subir
 }
 
 const FilePreviewModal: React.FC<FilePreviewModalProps> = ({
@@ -13,56 +14,69 @@ const FilePreviewModal: React.FC<FilePreviewModalProps> = ({
   onClose,
   fileId,
   fileName,
+  previewUrl,
 }) => {
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [imageUrl, setImageUrl] = useState<string | null>(null);
-  // ❌ ELIMINADO: const [fileSize, setFileSize] = useState<number>(0);
 
   useEffect(() => {
-    if (isOpen && fileId) {
-      setLoading(true);
-      setError(null);
-      setImageUrl(null);
+    if (!isOpen || !fileId) return;
+
+    // 🔥 SI YA TENEMOS UNA URL DE MINIATURA (RÁPIDA), LA USAMOS DIRECTAMENTE
+    if (previewUrl) {
+      const getDriveId = (url: string) => {
+        const match = url.match(/id=([^&]+)/);
+        return match ? match[1] : null;
+      };
       
-      const token = localStorage.getItem('token');
-      const baseUrl = import.meta.env.VITE_API_URL || 'http://localhost:5005/api';
-      
-      fetch(`${baseUrl}/archivos/${fileId}/preview?size=medium`, {
-        headers: {
-          'Authorization': `Bearer ${token}`
-        }
-      })
-      .then(res => {
-        console.log('📡 Status:', res.status);
-        if (!res.ok) {
-          return res.text().then(text => { 
-            console.error('❌ Error response:', text);
-            throw new Error(`Error ${res.status}: ${text}`);
-          });
-        }
-        return res.blob();
-      })
-      .then(blob => {
-        
-        // ❌ ELIMINADO: setFileSize(blob.size);
-        
-        const url = URL.createObjectURL(blob);
-        setImageUrl(url);
+      const driveId = getDriveId(previewUrl);
+      if (driveId) {
+        // Usamos el endpoint de Google Drive para miniaturas (carga en 1-2 seg)
+        setImageUrl(`https://drive.google.com/thumbnail?id=${driveId}&sz=w1200`);
         setLoading(false);
-      })
-      .catch(err => {
-      
-        setError(err.message || 'Error al cargar la vista previa');
-        setLoading(false);
-      });
+        setError(null);
+        return;
+      }
     }
-  }, [isOpen, fileId]);
+
+    // ⚠️ PLAN B: Si no hay miniatura (archivo viejo), usamos el backend (lento)
+    setLoading(true);
+    setError(null);
+    setImageUrl(null);
+    
+    const token = localStorage.getItem('token');
+    const baseUrl = import.meta.env.VITE_API_URL || 'http://localhost:5005/api';
+    
+    fetch(`${baseUrl}/archivos/${fileId}/preview?size=medium`, {
+      headers: {
+        'Authorization': `Bearer ${token}`
+      }
+    })
+    .then(res => {
+      if (!res.ok) {
+        return res.text().then(text => { 
+          throw new Error(`Error ${res.status}: ${text}`);
+        });
+      }
+      return res.blob();
+    })
+    .then(blob => {
+      const url = URL.createObjectURL(blob);
+      setImageUrl(url);
+      setLoading(false);
+    })
+    .catch(err => {
+      setError(err.message || 'Error al cargar la vista previa');
+      setLoading(false);
+    });
+
+  }, [isOpen, fileId, previewUrl]);
 
   // Limpiar URL al cerrar
   useEffect(() => {
     return () => {
-      if (imageUrl) {
+      if (imageUrl && imageUrl.startsWith('blob:')) {
         URL.revokeObjectURL(imageUrl);
       }
     };
@@ -101,28 +115,10 @@ const FilePreviewModal: React.FC<FilePreviewModalProps> = ({
               <p className="text-red-500 text-lg">❌ {error}</p>
               <p className="text-gray-400 mt-2">No se pudo cargar la vista previa del archivo</p>
               <button
-                onClick={() => {
-                  setLoading(true);
-                  setError(null);
-                  const token = localStorage.getItem('token');
-                  const baseUrl = import.meta.env.VITE_API_URL || 'http://localhost:5005/api';
-                  fetch(`${baseUrl}/archivos/${fileId}/preview?size=medium`, {
-                    headers: { 'Authorization': `Bearer ${token}` }
-                  })
-                  .then(res => res.blob())
-                  .then(blob => {
-                    const url = URL.createObjectURL(blob);
-                    setImageUrl(url);
-                    setLoading(false);
-                  })
-                  .catch(err => {
-                    setError(err.message);
-                    setLoading(false);
-                  });
-                }}
-                className="mt-4 px-4 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700 transition"
+                onClick={onClose}
+                className="mt-4 px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 transition"
               >
-                Reintentar
+                Cerrar
               </button>
             </div>
           ) : imageUrl ? (
@@ -133,8 +129,7 @@ const FilePreviewModal: React.FC<FilePreviewModalProps> = ({
                   alt={fileName}
                   className="max-w-full max-h-[70vh] object-contain rounded-lg"
                   onError={() => {
-                   
-                    setError('Error al renderizar la imagen');
+                    setError('Error al renderizar la imagen. El archivo podría no ser una imagen válida.');
                   }}
                 />
               </div>

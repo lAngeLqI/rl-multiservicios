@@ -7,19 +7,20 @@ import { useNotification } from '../../context/NotificationContext';
 import Button from '../../components/common/Button';
 import Card from '../../components/common/Card';
 import LoadingSpinner from '../../components/common/LoadingSpinner';
+import FilePreviewModal from '../../components/common/FilePreviewModal'; // 🔥 IMPORTADO
 
 interface Archivo {
   id: number;
   nombre_original: string;
   nombre_guardado: string;
   ruta: string;
+  ruta_preview?: string; // 🔥 Agregado
   tamaño_mb: number;
   tipo: string;
   estado: 'pendiente' | 'procesando' | 'listo' | 'error';
   created_at: string;
 }
 
-// 🔥 SOLO 4 ESTADOS PARA EL OPERADOR
 type EstadoType = 'pendiente' | 'proceso' | 'impreso' | 'entregado';
 
 interface PedidoDetalle {
@@ -43,6 +44,10 @@ const DetallePedido: React.FC = () => {
   const [pedido, setPedido] = useState<PedidoDetalle | null>(null);
   const [loading, setLoading] = useState(true);
   const [cambiandoEstado, setCambiandoEstado] = useState(false);
+  const [descargando, setDescargando] = useState<number | null>(null);
+  
+  // 🔥 Estado para el modal de previsualización
+  const [previewFile, setPreviewFile] = useState<{ id: number; name: string; previewUrl?: string } | null>(null);
 
   useEffect(() => {
     if (id) {
@@ -53,9 +58,7 @@ const DetallePedido: React.FC = () => {
   const cargarDetallePedido = async (pedidoId: number) => {
     setLoading(true);
     try {
-      
       const data = await pedidoService.getPedidoById(pedidoId);
-      
       setPedido(data);
     } catch (error) {
       console.error('❌ Error al cargar detalle:', error);
@@ -66,7 +69,6 @@ const DetallePedido: React.FC = () => {
     }
   };
 
-  // 🔥 FUNCIÓN PARA CAMBIAR ESTADO (SOLO 4 ESTADOS)
   const cambiarEstado = async (nuevoEstado: EstadoType) => {
     if (!pedido) return;
 
@@ -76,7 +78,6 @@ const DetallePedido: React.FC = () => {
       showNotification('success', `✅ Estado actualizado a "${nuevoEstado}"`);
       await cargarDetallePedido(pedido.id);
     } catch (error) {
-      
       showNotification('error', 'Error al cambiar el estado');
     } finally {
       setCambiandoEstado(false);
@@ -85,6 +86,7 @@ const DetallePedido: React.FC = () => {
 
   const descargarArchivo = async (archivo: Archivo) => {
     try {
+      setDescargando(archivo.id);
       const blob = await archivoService.downloadArchivo(archivo.id);
       const url = window.URL.createObjectURL(blob);
       const link = document.createElement('a');
@@ -97,8 +99,9 @@ const DetallePedido: React.FC = () => {
       
       showNotification('success', `📥 Descargando ${archivo.nombre_original}`);
     } catch (error) {
-      
       showNotification('error', 'Error al descargar el archivo');
+    } finally {
+      setDescargando(null);
     }
   };
 
@@ -110,7 +113,6 @@ const DetallePedido: React.FC = () => {
     });
   };
 
-  // 🔥 COLORES PARA LOS 4 ESTADOS
   const getEstadoColor = (estado: EstadoType) => {
     const colors = {
       pendiente: 'bg-yellow-100 text-yellow-800 border-yellow-200',
@@ -121,7 +123,6 @@ const DetallePedido: React.FC = () => {
     return colors[estado] || 'bg-gray-100 text-gray-800';
   };
 
-  // 🔥 ÍCONOS PARA LOS 4 ESTADOS
   const getEstadoIcon = (estado: EstadoType) => {
     const icons = {
       pendiente: '⏳',
@@ -141,7 +142,6 @@ const DetallePedido: React.FC = () => {
     return colors[prioridad as keyof typeof colors] || 'bg-gray-500 text-white';
   };
 
-  // 🔥 FUNCIÓN DE SEGURIDAD PARA TAMAÑO
   const formatearTamaño = (tamaño: any): string => {
     const num = typeof tamaño === 'number' ? tamaño : parseFloat(tamaño);
     if (isNaN(num)) return '0.0';
@@ -233,7 +233,7 @@ const DetallePedido: React.FC = () => {
         )}
       </Card>
 
-      {/* 🔥 CAMBIAR ESTADO - SOLO 4 ESTADOS */}
+      {/* CAMBIAR ESTADO */}
       <Card title="🔄 Cambiar Estado">
         <div className="flex flex-wrap gap-2">
           {['pendiente', 'proceso', 'impreso', 'entregado'].map((estado) => (
@@ -299,12 +299,36 @@ const DetallePedido: React.FC = () => {
                       </span>
                     </td>
                     <td className="px-4 py-3">
-                      <button
-                        onClick={() => descargarArchivo(archivo)}
-                        className="text-blue-600 hover:text-blue-800 text-sm flex items-center gap-1"
-                      >
-                        📥 Descargar
-                      </button>
+                      <div className="flex items-center gap-3">
+                        {/* BOTÓN DE VISTA PREVIA */}
+                        <button
+                          onClick={() => setPreviewFile({
+                            id: archivo.id,
+                            name: archivo.nombre_original,
+                            previewUrl: archivo.ruta_preview // 🔥 URL rápida
+                          })}
+                          className="text-green-600 hover:text-green-800 text-sm flex items-center gap-1 font-medium"
+                          title="Vista previa rápida"
+                        >
+                          👁️ Ver
+                        </button>
+                        {/* BOTÓN DE DESCARGA */}
+                        <button
+                          onClick={() => descargarArchivo(archivo)}
+                          disabled={descargando === archivo.id}
+                          className="text-blue-600 hover:text-blue-800 text-sm flex items-center gap-1 font-medium disabled:opacity-50"
+                          title="Descargar archivo"
+                        >
+                          {descargando === archivo.id ? (
+                            <>
+                              <span className="animate-spin">⏳</span>
+                              Descargando...
+                            </>
+                          ) : (
+                            '📥 Descargar'
+                          )}
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 ))}
@@ -316,7 +340,7 @@ const DetallePedido: React.FC = () => {
         )}
       </Card>
 
-      {/* 🔥 ACCIONES - SOLO PARA ESTADOS ESPECÍFICOS */}
+      {/* ACCIONES */}
       <div className="flex gap-3">
         {pedido.estado === 'impreso' && (
           <Button
@@ -355,6 +379,17 @@ const DetallePedido: React.FC = () => {
           Volver a la lista
         </Button>
       </div>
+
+      {/* 🔥 MODAL DE VISTA PREVIA */}
+      {previewFile && (
+        <FilePreviewModal
+          isOpen={!!previewFile}
+          onClose={() => setPreviewFile(null)}
+          fileId={previewFile.id}
+          fileName={previewFile.name}
+          previewUrl={previewFile.previewUrl}
+        />
+      )}
     </div>
   );
 };

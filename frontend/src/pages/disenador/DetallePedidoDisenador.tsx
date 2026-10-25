@@ -14,6 +14,8 @@ interface Archivo {
   id: number;
   nombre_original: string;
   nombre_guardado: string;
+  ruta: string;          // 🔥 Agregado
+  ruta_preview?: string; // 🔥 Agregado (URL de la miniatura rápida)
   tamaño_mb: number;
   tipo: string;
   estado: 'pendiente' | 'procesando' | 'listo' | 'error';
@@ -45,7 +47,9 @@ const DetallePedidoDisenador: React.FC = () => {
   const [pedido, setPedido] = useState<PedidoDetalle | null>(null);
   const [loading, setLoading] = useState(true);
   const [descargando, setDescargando] = useState<number | null>(null);
-  const [previewFile, setPreviewFile] = useState<{ id: number; name: string } | null>(null);
+  
+  // 🔥 Actualizado para guardar también la URL de la miniatura
+  const [previewFile, setPreviewFile] = useState<{ id: number; name: string; previewUrl?: string } | null>(null);
 
   useEffect(() => {
     if (id) {
@@ -373,7 +377,8 @@ const DetallePedidoDisenador: React.FC = () => {
                           <button
                             onClick={() => setPreviewFile({
                               id: archivo.id,
-                              name: archivo.nombre_original
+                              name: archivo.nombre_original,
+                              previewUrl: archivo.ruta_preview // 🔥 Pasamos la URL rápida de Drive
                             })}
                             className="text-green-600 hover:text-green-800 text-sm flex items-center gap-1 font-medium"
                             title="Vista previa rápida"
@@ -463,6 +468,7 @@ const DetallePedidoDisenador: React.FC = () => {
           onClose={() => setPreviewFile(null)}
           fileId={previewFile.id}
           fileName={previewFile.name}
+          previewUrl={previewFile.previewUrl} // 🔥 Le pasamos la URL de la miniatura
         />
       )}
     </div>
