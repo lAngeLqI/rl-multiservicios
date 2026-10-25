@@ -3,7 +3,6 @@ import multer from 'multer';
 import path from 'path';
 import fs from 'fs';
 
-// Crear carpeta uploads si no existe
 const uploadDir = process.env['UPLOAD_DIR'] || './uploads';
 if (!fs.existsSync(uploadDir)) {
     fs.mkdirSync(uploadDir, { recursive: true });
@@ -20,17 +19,19 @@ const storage = multer.diskStorage({
 });
 
 const fileFilter = (_req: any, file: any, cb: any) => {
-    // 🔥 FORMATOS PERMITIDOS (TIFF, PSD, AI, PDF, PNG, JPG, etc.)
     const allowedTypes = [
         'image/tiff', 'image/tif',
         'image/jpeg', 'image/png',
         'application/pdf',
         'application/postscript',
         'image/vnd.adobe.photoshop',
-        'text/plain'
+        'text/plain',
+        'application/zip',                  // 🔥 ZIP MIME TYPE
+        'application/x-zip-compressed',     // 🔥 ZIP MIME TYPE ALTERNATIVO
+        'multipart/x-zip'
     ];
     
-    const allowedExtensions = ['.tiff', '.tif', '.jpg', '.jpeg', '.png', '.pdf', '.psd', '.ai', '.txt'];
+    const allowedExtensions = ['.tiff', '.tif', '.jpg', '.jpeg', '.png', '.pdf', '.psd', '.ai', '.txt', '.zip'];
     const ext = path.extname(file.originalname).toLowerCase();
     
     if (allowedTypes.includes(file.mimetype) || allowedExtensions.includes(ext)) {
@@ -40,7 +41,6 @@ const fileFilter = (_req: any, file: any, cb: any) => {
     }
 };
 
-// 🔥 TAMAÑO MÁXIMO: 500MB (usando el valor de .env o por defecto)
 const maxSize = Number(process.env['MAX_FILE_SIZE']) || 500 * 1024 * 1024;
 
 export const upload = multer({

@@ -5,6 +5,8 @@ import { AuthRequest } from '../middleware/auth.js';
 import { io } from '../server.js';
 import { uploadToDrive } from '../services/drive-googleapis-service.js';
 import fs from 'fs';
+import path from 'path';
+import StreamZip from 'node-stream-zip'; 
 
 // ========== CREAR PEDIDO ==========
 export const createPedido = async (req: AuthRequest, res: Response) => {
@@ -19,13 +21,11 @@ export const createPedido = async (req: AuthRequest, res: Response) => {
             });
         }
 
-        // 🔥 En Postgres usamos pool.connect() para transacciones
         const client = await pool.connect();
         
         try {
             await client.query('BEGIN');
 
-            // 1. Insertar pedido y obtener ID (RETURNING)
             const pedidoResult = await client.query(
                 `INSERT INTO pedidos 
                  (nombre, fecha_entrega, prioridad, comentario_general, disenador_id, estado) 
@@ -34,63 +34,122 @@ export const createPedido = async (req: AuthRequest, res: Response) => {
             );
 
             const pedidoId = pedidoResult.rows[0].id;
-            const archivosGuardados = [];
             const files = req.files as Express.Multer.File[];
             
-            // 2. Procesar y subir cada archivo a Drive
-            for (const file of files) {
+            const uploadPromises = files.map(async (file) => {
                 try {
-                    console.log(`📤 Subiendo archivo a Drive: ${file.originalname}`);
+                    const ext = path.extname(file.originalname).toLowerCase();
                     
-                    // 🔥 SUBIR A GOOGLE DRIVE (en lugar de guardar en disco local)
-                    const driveResult = await uploadToDrive(
-                        file.path,
-                        file.originalname,
-                        file.mimetype
-                    );
-                    
-                    console.log(`✅ Archivo subido a Drive: ${driveResult.url}`);
+                    // 🔥 SI ES UN ZIP (Usando node-stream-zip)
+                    if (ext === '.zip') {
+                        console.log(`📦 Procesando archivo ZIP en streaming: ${file.originalname}`);
+                        
+                        const zip = new StreamZip.async({ file: file.path });
+                        const entries = await zip.entries();
+                        const archivosExtraidos = [];
 
-                    const tamañoMb = (file.size / 1024 / 1024);
+                        for (const entry of Object.values(entries)) {
+                            // Ignorar carpetas y archivos del sistema (Mac)
+                            if (entry.isDirectory || entry.name.includes('__MACOSX') || entry.name.startsWith('.')) {
+                                continue;
+                            }
 
-                    // 🔥 GUARDAR EN BASE DE DATOS CON LA URL DE DRIVE
-                    const archivoResult = await client.query(
-                        `INSERT INTO archivos 
-                         (nombre_original, nombre_guardado, ruta, tamaño_mb, tipo, pedido_id, estado) 
-                         VALUES ($1, $2, $3, $4, $5, $6, 'listo') RETURNING id`,
-                        [
-                            file.originalname, 
-                            `drive_${Date.now()}_${file.originalname}`, 
-                            driveResult.url, // ✅ URL de Google Drive
-                            tamañoMb, 
-                            file.mimetype, 
-                            pedidoId
-                        ]
-                    );
+                            const fileNameInsideZip = path.basename(entry.name);
+                            const tempExtractPath = path.join(process.env['UPLOAD_DIR'] || './uploads', `${Date.now()}_${fileNameInsideZip}`);
 
-                    archivosGuardados.push({
-                        id: archivoResult.rows[0].id,
-                        nombre: file.originalname,
-                        tamaño: tamañoMb
-                    });
+                            console.log(`📤 Extrayendo y subiendo a Drive: ${fileNameInsideZip}`);
+                            
+                            // Extraemos el archivo del ZIP al disco (Streaming a disco)
+                            await zip.extract(entry.name, tempExtractPath);
 
-                    // 🔥 ELIMINAR ARCHIVO TEMPORAL DEL SERVIDOR
-                    try {
-                        if (fs.existsSync(file.path)) {
-                            fs.unlinkSync(file.path);
+                            // Subimos a Drive usando tu función original
+                            const driveResult = await uploadToDrive(
+                                tempExtractPath,
+                                fileNameInsideZip,
+                                'application/octet-stream' // Tipo genérico
+                            );
+
+                            // Obtener tamaño del archivo extraído
+                            const stats = fs.statSync(tempExtractPath);
+                            const tamañoMb = stats.size / 1024 / 1024;
+
+                            // Guardar en BD
+                            const archivoResult = await client.query(
+                                `INSERT INTO archivos 
+                                 (nombre_original, nombre_guardado, ruta, tamaño_mb, tipo, pedido_id, estado) 
+                                 VALUES ($1, $2, $3, $4, $5, $6, 'listo') RETURNING id`,
+                                [
+                                    fileNameInsideZip, 
+                                    `drive_${Date.now()}_${fileNameInsideZip}`, 
+                                    driveResult.url, 
+                                    tamañoMb, 
+                                    'application/octet-stream', 
+                                    pedidoId
+                                ]
+                            );
+
+                            archivosExtraidos.push({
+                                id: archivoResult.rows[0].id,
+                                nombre: fileNameInsideZip,
+                                tamaño: tamañoMb
+                            });
+
+                            // Borrar archivo temporal extraído inmediatamente
+                            if (fs.existsSync(tempExtractPath)) fs.unlinkSync(tempExtractPath);
                         }
-                    } catch (unlinkError) {
-                        console.error('Error al eliminar archivo temporal:', unlinkError);
+
+                        // Cerrar el ZIP y borrar el archivo original
+                        await zip.close();
+                        if (fs.existsSync(file.path)) fs.unlinkSync(file.path);
+                        
+                        return archivosExtraidos;
+
+                    } else {
+                        // 🔥 ARCHIVO NORMAL (no zip)
+                        console.log(`📤 Subiendo archivo a Drive: ${file.originalname}`);
+                        
+                        const driveResult = await uploadToDrive(
+                            file.path,
+                            file.originalname,
+                            file.mimetype
+                        );
+
+                        const tamañoMb = (file.size / 1024 / 1024);
+
+                        const archivoResult = await client.query(
+                            `INSERT INTO archivos 
+                             (nombre_original, nombre_guardado, ruta, tamaño_mb, tipo, pedido_id, estado) 
+                             VALUES ($1, $2, $3, $4, $5, $6, 'listo') RETURNING id`,
+                            [
+                                file.originalname, 
+                                `drive_${Date.now()}_${file.originalname}`, 
+                                driveResult.url, 
+                                tamañoMb, 
+                                file.mimetype, 
+                                pedidoId
+                            ]
+                        );
+
+                        return [{
+                            id: archivoResult.rows[0].id,
+                            nombre: file.originalname,
+                            tamaño: tamañoMb
+                        }];
                     }
 
                 } catch (error) {
-                    console.error('Error al procesar archivo:', error);
+                    console.error(`❌ Error procesando archivo ${file.originalname}:`, error);
+                    if (fs.existsSync(file.path)) fs.unlinkSync(file.path); // Limpieza
+                    return [];
                 }
-            }
+            });
+
+            const resultados = await Promise.all(uploadPromises);
+            // Aplanamos el arreglo (porque los ZIPs devuelven arrays de archivos)
+            const archivosGuardados = resultados.flat();
 
             await client.query('COMMIT');
 
-            // 🔥 EVENTO WEBSOCKET
             io.emit('nuevo-pedido', { 
                 pedidoId, 
                 disenador_id, 
