@@ -1,79 +1,57 @@
 // src/hooks/useSocket.ts
-import { useEffect, useState, useRef } from 'react';
 import { io, Socket } from 'socket.io-client';
-import { useAuth } from '../context/AuthContext';
+import { useEffect, useState } from 'react';
 
 const SOCKET_URL = import.meta.env.VITE_SOCKET_URL || 'http://localhost:5005';
 
+// 🔥 1. Creamos el socket FUERA del componente.
+// Al estar fuera, React nunca lo destruirá por re-renders.
+export const socket: Socket = io(SOCKET_URL, {
+  autoConnect: false, // No conectar hasta que el usuario esté logueado
+  auth: {
+    token: localStorage.getItem('token') || '',
+  },
+  transports: ['websocket'],
+  reconnection: true,
+  reconnectionAttempts: Infinity,
+  reconnectionDelay: 2000,
+  reconnectionDelayMax: 10000,
+  timeout: 60000,
+});
+
 export const useSocket = () => {
-  const [socket, setSocket] = useState<Socket | null>(null);
-  const [isConnected, setIsConnected] = useState(false);
-  const { user, isAuthenticated } = useAuth();
-  const socketRef = useRef<Socket | null>(null);
+  const [isConnected, setIsConnected] = useState(socket.connected);
 
   useEffect(() => {
-    if (!isAuthenticated || !user) {
-      return;
-    }
-
-    const newSocket = io(SOCKET_URL, {
-      auth: {
-        token: localStorage.getItem('token'),
-      },
-      transports: ['websocket'],
-      reconnection: true,
-      reconnectionAttempts: 5,
-      reconnectionDelay: 1000,
-    });
-
-    socketRef.current = newSocket;
-    setSocket(newSocket);
-
-    newSocket.on('connect', () => {
+    const onConnect = () => {
+      console.log('✅ Socket.IO conectado:', socket.id);
       setIsConnected(true);
-    });
-
-    newSocket.on('disconnect', () => {
+    };
+    const onDisconnect = () => {
+      console.log('❌ Socket.IO desconectado');
       setIsConnected(false);
-    });
-
-    newSocket.on('connect_error', () => {
+    };
+    const onConnectError = (err: any) => {
+      console.warn('⚠️ Socket Error:', err.message);
       setIsConnected(false);
-    });
+    };
+
+    socket.on('connect', onConnect);
+    socket.on('disconnect', onDisconnect);
+    socket.on('connect_error', onConnectError);
 
     return () => {
-      if (newSocket) {
-        newSocket.disconnect();
-        socketRef.current = null;
-        setSocket(null);
-        setIsConnected(false);
-      }
+      socket.off('connect', onConnect);
+      socket.off('disconnect', onDisconnect);
+      socket.off('connect_error', onConnectError);
     };
-  }, [isAuthenticated, user]);
-
-  const on = (event: string, callback: (...args: any[]) => void) => {
-    if (socketRef.current) {
-      socketRef.current.on(event, callback);
-    }
-  };
-
-  const off = (event: string, callback?: (...args: any[]) => void) => {
-    if (socketRef.current) {
-      socketRef.current.off(event, callback);
-    }
-  };
-
-  const emit = (event: string, data?: any) => {
-    if (socketRef.current) {
-      socketRef.current.emit(event, data);
-    }
-  };
+  }, []);
 
   return {
     socket,
     isConnected,
-    on,
-    off,
-    emit,
+    on: socket.on.bind(socket),
+    off: socket.off.bind(socket),
+    emit: socket.emit.bind(socket),
   };
 };
