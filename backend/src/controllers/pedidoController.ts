@@ -7,7 +7,6 @@ import { uploadToDrive } from '../services/drive-googleapis-service.js';
 import fs from 'fs';
 import path from 'path';
 import StreamZip from 'node-stream-zip';
-// ❌ ELIMINADO: import sharp from 'sharp';
 
 export const createPedido = async (req: AuthRequest, res: Response) => {
     try {
@@ -24,8 +23,8 @@ export const createPedido = async (req: AuthRequest, res: Response) => {
             await client.query('BEGIN');
 
             const pedidoResult = await client.query(
-                `INSERT INTO pedidos (nombre, fecha_entrega, prioridad, comentario_general, disenador_id, estado) 
-                 VALUES ($1, $2, $3, $4, $5, 'pendiente') RETURNING id`,
+                `INSERT INTO pedidos (nombre, fecha_entrega, prioridad, comentario_general, disenador_id, estado, created_at) 
+                 VALUES ($1, $2, $3, $4, $5, 'pendiente', NOW() AT TIME ZONE 'America/Lima') RETURNING id`,
                 [nombre, fecha_entrega, prioridad || 'media', comentario_general, disenador_id]
             );
 
@@ -40,30 +39,46 @@ export const createPedido = async (req: AuthRequest, res: Response) => {
                     // 🔥 PROCESAR ZIP
                     if (ext === '.zip') {
                         console.log(`📦 Procesando ZIP: ${file.originalname}`);
+                        
+                        // 1. Crear carpeta temporal para extraer
+                        const tempDir = path.resolve(uploadsDir, `temp_zip_${Date.now()}`);
+                        if (!fs.existsSync(tempDir)) fs.mkdirSync(tempDir, { recursive: true });
+
                         const zip = new StreamZip.async({ file: file.path });
-                        const entries = await zip.entries();
+                        
+                        // 2. Extraer TODO el ZIP a la carpeta temporal
+                        await zip.extract(null, tempDir);
+                        await zip.close();
+
                         const archivosExtraidos = [];
+                        // 3. Leer recursivamente los archivos extraídos
+                        const archivosEnDisco = fs.readdirSync(tempDir, { recursive: true }) as string[];
 
-                        for (const entry of Object.values(entries)) {
-                            if (entry.isDirectory || entry.name.includes('__MACOSX') || entry.name.startsWith('.')) continue;
+                        for (const archivoPath of archivosEnDisco) {
+                            const fullPath = path.resolve(tempDir, archivoPath);
+                            
+                            // Ignorar carpetas
+                            if (!fs.statSync(fullPath).isFile()) continue;
 
-                            const fileNameInsideZip = path.basename(entry.name);
-                            const tempExtractPath = path.resolve(uploadsDir, `${Date.now()}_${fileNameInsideZip}`);
+                            const fileNameInsideZip = path.basename(archivoPath);
+                            
+                            // Ignorar basura de Mac
+                            if (fileNameInsideZip.startsWith('__MACOSX') || fileNameInsideZip.startsWith('.')) continue;
 
-                            await zip.extract(entry.name, tempExtractPath);
-                            if (!fs.existsSync(tempExtractPath)) continue;
+                            console.log(`📤 Subiendo desde ZIP a Drive: ${fileNameInsideZip}`);
 
-                            // 1. Subir original a Drive
-                            const driveResult = await uploadToDrive(tempExtractPath, fileNameInsideZip, 'application/octet-stream');
+                            // Subir original a Drive
+                            const driveResult = await uploadToDrive(fullPath, fileNameInsideZip, 'application/octet-stream');
 
-                            // 2. Guardar en BD (SOLO EL ORIGINAL, SIN MINIATURA)
-                            const stats = fs.statSync(tempExtractPath);
+                            // Obtener tamaño
+                            const stats = fs.statSync(fullPath);
                             const tamañoMb = stats.size / 1024 / 1024;
 
+                            // Guardar en BD
                             const archivoResult = await client.query(
                                 `INSERT INTO archivos 
-                                 (nombre_original, nombre_guardado, ruta, tamaño_mb, tipo, pedido_id, estado) 
-                                 VALUES ($1, $2, $3, $4, $5, $6, 'listo') RETURNING id`,
+                                 (nombre_original, nombre_guardado, ruta, tamaño_mb, tipo, pedido_id, estado, created_at) 
+                                 VALUES ($1, $2, $3, $4, $5, $6, 'listo', NOW() AT TIME ZONE 'America/Lima') RETURNING id`,
                                 [
                                     fileNameInsideZip, 
                                     `drive_${Date.now()}_${fileNameInsideZip}`, 
@@ -75,11 +90,13 @@ export const createPedido = async (req: AuthRequest, res: Response) => {
                             );
 
                             archivosExtraidos.push({ id: archivoResult.rows[0].id, nombre: fileNameInsideZip, tamaño: tamañoMb });
-                            if (fs.existsSync(tempExtractPath)) fs.unlinkSync(tempExtractPath);
                         }
 
-                        await zip.close();
+                        // 4. Limpiar carpeta temporal y ZIP original
+                        fs.rmSync(tempDir, { recursive: true, force: true });
                         if (fs.existsSync(file.path)) fs.unlinkSync(file.path);
+                        
+                        console.log(`✅ ZIP procesado: ${archivosExtraidos.length} archivos guardados.`);
                         return archivosExtraidos;
 
                     } else {
@@ -89,13 +106,13 @@ export const createPedido = async (req: AuthRequest, res: Response) => {
                         // 1. Subir original a Drive
                         const driveResult = await uploadToDrive(file.path, file.originalname, file.mimetype);
 
-                        // 2. Guardar en BD (SOLO EL ORIGINAL, SIN MINIATURA)
+                        // 2. Guardar en BD
                         const tamañoMb = (file.size / 1024 / 1024);
 
                         const archivoResult = await client.query(
                             `INSERT INTO archivos 
-                             (nombre_original, nombre_guardado, ruta, tamaño_mb, tipo, pedido_id, estado) 
-                             VALUES ($1, $2, $3, $4, $5, $6, 'listo') RETURNING id`,
+                             (nombre_original, nombre_guardado, ruta, tamaño_mb, tipo, pedido_id, estado, created_at) 
+                             VALUES ($1, $2, $3, $4, $5, $6, 'listo', NOW() AT TIME ZONE 'America/Lima') RETURNING id`,
                             [
                                 file.originalname, 
                                 `drive_${Date.now()}_${file.originalname}`, 
@@ -141,7 +158,6 @@ export const createPedido = async (req: AuthRequest, res: Response) => {
     }
 };
 
-
 // ========== OBTENER TODOS LOS PEDIDOS (Operador) ==========
 export const getPedidos = async (req: Request, res: Response) => {
     try {
@@ -177,7 +193,6 @@ export const getPedidos = async (req: Request, res: Response) => {
 
         const result = await pool.query(query, params);
 
-        // Contar total
         let countQuery = 'SELECT COUNT(*) as total FROM pedidos WHERE 1=1';
         const countParams: any[] = [];
         let countIndex = 1;
@@ -206,17 +221,13 @@ export const getPedidos = async (req: Request, res: Response) => {
 
     } catch (error) {
         console.error('Error en getPedidos:', error);
-        return res.status(500).json({ 
-            success: false, 
-            message: 'Error al obtener pedidos' 
-        });
+        return res.status(500).json({ success: false, message: 'Error al obtener pedidos' });
     }
 };
 
 // ========== OBTENER PEDIDOS POR DISEÑADOR ==========
 export const getPedidosByDisenador = async (req: AuthRequest, res: Response) => {
     try {
-        // 🔥 Usamos el ID del token (seguro, ignora el de la URL)
         const userId = req.userId; 
 
         const result = await pool.query(
@@ -228,17 +239,11 @@ export const getPedidosByDisenador = async (req: AuthRequest, res: Response) => 
             [userId] 
         );
 
-        return res.json({
-            success: true,
-            data: result.rows
-        });
+        return res.json({ success: true, data: result.rows });
 
     } catch (error) {
         console.error('Error en getPedidosByDisenador:', error);
-        return res.status(500).json({
-            success: false,
-            message: 'Error al obtener pedidos'
-        });
+        return res.status(500).json({ success: false, message: 'Error al obtener pedidos' });
     }
 };
 
@@ -259,10 +264,7 @@ export const getPedidoById = async (req: Request, res: Response) => {
         );
 
         if (result.rows.length === 0) {
-            return res.status(404).json({ 
-                success: false, 
-                message: 'Pedido no encontrado' 
-            });
+            return res.status(404).json({ success: false, message: 'Pedido no encontrado' });
         }
 
         const archivosResult = await pool.query(
@@ -280,10 +282,7 @@ export const getPedidoById = async (req: Request, res: Response) => {
 
     } catch (error) {
         console.error('Error en getPedidoById:', error);
-        return res.status(500).json({ 
-            success: false, 
-            message: 'Error al obtener el pedido' 
-        });
+        return res.status(500).json({ success: false, message: 'Error al obtener el pedido' });
     }
 };
 
@@ -300,10 +299,7 @@ export const updateEstado = async (req: AuthRequest, res: Response) => {
         );
 
         if (result.rowCount === 0) {
-            return res.status(404).json({ 
-                success: false, 
-                message: 'Pedido no encontrado' 
-            });
+            return res.status(404).json({ success: false, message: 'Pedido no encontrado' });
         }
 
         io.emit('estado-cambiado', {
@@ -312,17 +308,11 @@ export const updateEstado = async (req: AuthRequest, res: Response) => {
             mensaje: `🔄 Pedido #${id} cambiado a "${estado}"`
         });
 
-        return res.json({ 
-            success: true, 
-            message: 'Estado actualizado correctamente' 
-        });
+        return res.json({ success: true, message: 'Estado actualizado correctamente' });
 
     } catch (error) {
         console.error('Error en updateEstado:', error);
-        return res.status(500).json({ 
-            success: false, 
-            message: 'Error al actualizar estado' 
-        });
+        return res.status(500).json({ success: false, message: 'Error al actualizar estado' });
     }
 };
 
@@ -337,10 +327,7 @@ export const aprobarPedido = async (req: AuthRequest, res: Response) => {
         );
 
         if (result.rowCount === 0) {
-            return res.status(400).json({ 
-                success: false, 
-                message: 'El pedido no está listo para aprobar o no existe' 
-            });
+            return res.status(400).json({ success: false, message: 'El pedido no está listo para aprobar o no existe' });
         }
 
         io.emit('estado-cambiado', {
@@ -349,17 +336,11 @@ export const aprobarPedido = async (req: AuthRequest, res: Response) => {
             mensaje: `✅ Pedido #${id} aprobado`
         });
 
-        return res.json({ 
-            success: true, 
-            message: 'Pedido aprobado correctamente' 
-        });
+        return res.json({ success: true, message: 'Pedido aprobado correctamente' });
 
     } catch (error) {
         console.error('Error en aprobarPedido:', error);
-        return res.status(500).json({ 
-            success: false, 
-            message: 'Error al aprobar pedido' 
-        });
+        return res.status(500).json({ success: false, message: 'Error al aprobar pedido' });
     }
 };
 
@@ -393,9 +374,6 @@ export const getStats = async (_req: Request, res: Response) => {
 
     } catch (error) {
         console.error('Error en getStats:', error);
-        return res.status(500).json({ 
-            success: false, 
-            message: 'Error al obtener estadísticas' 
-        });
+        return res.status(500).json({ success: false, message: 'Error al obtener estadísticas' });
     }
 };
