@@ -70,67 +70,47 @@ export const previewArchivo = async (req: Request, res: Response) => {
         const { size = 'medium' } = req.query;
 
         // 1. Buscar en la BD
-        const result = await pool.query(
-            'SELECT * FROM archivos WHERE id = $1',
-            [id]
-        );
+        const result = await pool.query('SELECT * FROM archivos WHERE id = $1', [id]);
 
         if (result.rows.length === 0) {
-            return res.status(404).json({
-                success: false,
-                message: 'Archivo no encontrado en la BD'
-            });
+            return res.status(404).json({ success: false, message: 'Archivo no encontrado' });
         }
 
         const archivo = result.rows[0];
-
-        // 2. 🔥 DESCARGAR DE GOOGLE DRIVE (en lugar de buscar en disco local)
-        let fileData;
-        try {
-            fileData = await downloadFromDrive(archivo.ruta);
-        } catch (driveError) {
-            console.error('❌ Error al descargar de Drive:', driveError);
-            return res.status(404).json({
-                success: false,
-                message: 'No se pudo descargar el archivo de Google Drive'
-            });
-        }
-
-        // 3. Verificar si es imagen
         const isImage = archivo.tipo?.startsWith('image/') || 
                         archivo.nombre_original.match(/\.(tiff|tif|jpg|jpeg|png|gif|bmp|webp)$/i);
 
         if (!isImage) {
-            return res.status(415).json({
-                success: false,
-                message: 'No se puede previsualizar este tipo de archivo'
-            });
+            return res.status(415).json({ success: false, message: 'No es una imagen previsualizable' });
         }
 
-        // 4. Configurar tamaño
+        // 2. Descargar de Google Drive
+        console.log(`📥 Descargando para preview: ${archivo.nombre_original}`);
+        const fileData = await downloadFromDrive(archivo.ruta);
+
+        // 3. Configurar tamaño
         let width = 800;
-        let height = 800;
-        if (size === 'small') { width = 300; height = 300; } 
-        else if (size === 'large') { width = 1200; height = 1200; }
+        if (size === 'small') width = 300;
+        else if (size === 'large') width = 1200;
 
-        // 5. Convertir a PNG
-        const pngBuffer = await sharp(fileData)
-            .resize(width, height, { fit: 'inside', withoutEnlargement: true })
-            .png({ quality: 80, compressionLevel: 6 })
-            .toBuffer();
+        // 🔥 4. CONVERSIÓN ULTRA RÁPIDA Y SEGURA
+        const pngBuffer = await sharp(fileData, {
+            limitInputPixels: false, // Evita que falle con imágenes gigantes
+            sequentialRead: true     // Ayuda a que sea más rápido en servidores lentos
+        })
+        .toColourspace('srgb')       // 🔥 Convierte CMYK a RGB (evita el error de color)
+        .resize(width, null, { fit: 'inside', withoutEnlargement: true })
+        .jpeg({ quality: 75, progressive: true }) // 🔥 Convertimos a JPG (más rápido que PNG)
+        .toBuffer();
 
-        // 6. Enviar
-        res.setHeader('Content-Type', 'image/png');
-        res.setHeader('Cache-Control', 'public, max-age=86400');
-        res.setHeader('Content-Disposition', 'inline');
+        // 5. Enviar respuesta
+        res.setHeader('Content-Type', 'image/jpeg'); // Cambiado a jpeg
+        res.setHeader('Cache-Control', 'public, max-age=86400'); 
         return res.send(pngBuffer);
 
     } catch (error) {
-        console.error('Error en previewArchivo:', error);
-        return res.status(500).json({
-            success: false,
-            message: 'Error al previsualizar archivo'
-        });
+        console.error('❌ Error en previewArchivo:', error);
+        return res.status(500).json({ success: false, message: 'Error al generar vista previa' });
     }
 };
 
