@@ -40,41 +40,46 @@ export const createPedido = async (req: AuthRequest, res: Response) => {
                     if (ext === '.zip') {
                         console.log(`📦 Procesando ZIP: ${file.originalname}`);
                         
-                        // 1. Crear carpeta temporal para extraer
                         const tempDir = path.resolve(uploadsDir, `temp_zip_${Date.now()}`);
                         if (!fs.existsSync(tempDir)) fs.mkdirSync(tempDir, { recursive: true });
 
                         const zip = new StreamZip.async({ file: file.path });
-                        
-                        // 2. Extraer TODO el ZIP a la carpeta temporal
                         await zip.extract(null, tempDir);
                         await zip.close();
 
-                        const archivosExtraidos = [];
-                        // 3. Leer recursivamente los archivos extraídos
-                        const archivosEnDisco = fs.readdirSync(tempDir, { recursive: true }) as string[];
+                        const archivosExtraidos: string[] = [];
 
-                        for (const archivoPath of archivosEnDisco) {
-                            const fullPath = path.resolve(tempDir, archivoPath);
+                        // 🔥 FUNCIÓN PARA RECORRER CARPETAS DEL ZIP
+                        const recorrerCarpeta = (dir: string) => {
+                            const archivos = fs.readdirSync(dir);
                             
-                            // Ignorar carpetas
-                            if (!fs.statSync(fullPath).isFile()) continue;
+                            for (const archivo of archivos) {
+                                const fullPath = path.join(dir, archivo);
+                                const stat = fs.statSync(fullPath);
 
-                            const fileNameInsideZip = path.basename(archivoPath);
-                            
-                            // Ignorar basura de Mac
-                            if (fileNameInsideZip.startsWith('__MACOSX') || fileNameInsideZip.startsWith('.')) continue;
+                                if (stat.isDirectory()) {
+                                    recorrerCarpeta(fullPath);
+                                } else {
+                                    const fileNameInsideZip = path.basename(fullPath);
+                                    if (fileNameInsideZip.startsWith('__MACOSX') || fileNameInsideZip.startsWith('.')) continue;
+                                    archivosExtraidos.push(fullPath);
+                                }
+                            }
+                        };
 
+                        recorrerCarpeta(tempDir);
+                        const resultadosArchivos = [];
+
+                        // Procesamos cada archivo encontrado
+                        for (const fullPath of archivosExtraidos) {
+                            const fileNameInsideZip = path.basename(fullPath);
                             console.log(`📤 Subiendo desde ZIP a Drive: ${fileNameInsideZip}`);
 
-                            // Subir original a Drive
                             const driveResult = await uploadToDrive(fullPath, fileNameInsideZip, 'application/octet-stream');
-
-                            // Obtener tamaño
+                            
                             const stats = fs.statSync(fullPath);
                             const tamañoMb = stats.size / 1024 / 1024;
 
-                            // Guardar en BD
                             const archivoResult = await client.query(
                                 `INSERT INTO archivos 
                                  (nombre_original, nombre_guardado, ruta, tamaño_mb, tipo, pedido_id, estado, created_at) 
@@ -89,24 +94,25 @@ export const createPedido = async (req: AuthRequest, res: Response) => {
                                 ]
                             );
 
-                            archivosExtraidos.push({ id: archivoResult.rows[0].id, nombre: fileNameInsideZip, tamaño: tamañoMb });
+                            resultadosArchivos.push({ 
+                                id: archivoResult.rows[0].id, 
+                                nombre: fileNameInsideZip, 
+                                tamaño: tamañoMb 
+                            });
                         }
 
-                        // 4. Limpiar carpeta temporal y ZIP original
+                        // Limpieza
                         fs.rmSync(tempDir, { recursive: true, force: true });
                         if (fs.existsSync(file.path)) fs.unlinkSync(file.path);
                         
-                        console.log(`✅ ZIP procesado: ${archivosExtraidos.length} archivos guardados.`);
-                        return archivosExtraidos;
+                        console.log(`✅ ZIP procesado: ${resultadosArchivos.length} archivos guardados.`);
+                        return resultadosArchivos;
 
                     } else {
                         // 🔥 PROCESAR ARCHIVO NORMAL
                         console.log(`📤 Subiendo archivo: ${file.originalname}`);
                         
-                        // 1. Subir original a Drive
                         const driveResult = await uploadToDrive(file.path, file.originalname, file.mimetype);
-
-                        // 2. Guardar en BD
                         const tamañoMb = (file.size / 1024 / 1024);
 
                         const archivoResult = await client.query(
