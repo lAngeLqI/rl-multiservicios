@@ -44,30 +44,22 @@ export const createPedido = async (req: AuthRequest, res: Response) => {
                         const archivosExtraidos = [];
 
                         for (const entry of Object.values(entries)) {
-                            // Ignorar carpetas y archivos basura
                             if (entry.isDirectory || entry.name.includes('__MACOSX') || entry.name.startsWith('.')) continue;
 
                             const fileNameInsideZip = path.basename(entry.name);
                             const tempExtractPath = path.resolve(uploadsDir, `temp_${Date.now()}_${fileNameInsideZip}`);
 
-                            // Extraemos el archivo
                             await zip.extract(entry.name, tempExtractPath);
                             
-                            // 🔥 CALCULAMOS EL TAMAÑO USANDO EL ZIP (Evita statSync)
                             const tamañoMb = entry.size / 1024 / 1024;
 
-                            if (!fs.existsSync(tempExtractPath)) {
-                                console.warn(`⚠️ Archivo extraído no encontrado: ${fileNameInsideZip}`);
-                                continue;
-                            }
+                            if (!fs.existsSync(tempExtractPath)) continue;
 
                             try {
                                 console.log(`📤 Subiendo desde ZIP a Drive: ${fileNameInsideZip}`);
                                 
-                                // Subir a Drive
                                 const driveResult = await uploadToDrive(tempExtractPath, fileNameInsideZip, 'application/octet-stream');
 
-                                // Guardar en Supabase
                                 const archivoResult = await client.query(
                                     `INSERT INTO archivos 
                                      (nombre_original, nombre_guardado, ruta, tamaño_mb, tipo, pedido_id, estado, created_at) 
@@ -89,9 +81,8 @@ export const createPedido = async (req: AuthRequest, res: Response) => {
                                 });
                                 console.log(`✅ Guardado en BD: ${fileNameInsideZip}`);
                             } catch (err) {
-                                console.error(`❌ Error guardando ${fileNameInsideZip} en BD/Drive:`, err);
+                                console.error(`❌ Error guardando ${fileNameInsideZip}:`, err);
                             } finally {
-                                // Limpiar archivo temporal
                                 if (fs.existsSync(tempExtractPath)) fs.unlinkSync(tempExtractPath);
                             }
                         }
@@ -188,7 +179,8 @@ export const getPedidos = async (req: Request, res: Response) => {
             params.push(prioridad);
         }
 
-        query += ` ORDER BY p.created_at DESC LIMIT $${paramIndex++} OFFSET $${paramIndex++}`;
+        // 🔥 ORDEN DESCENDENTE (Más reciente primero)
+        query += ` ORDER BY p.created_at DESC, p.id DESC LIMIT $${paramIndex++} OFFSET $${paramIndex++}`;
         params.push(Number(limit), offset);
 
         const result = await pool.query(query, params);
@@ -235,7 +227,7 @@ export const getPedidosByDisenador = async (req: AuthRequest, res: Response) => 
                     (SELECT COUNT(*) FROM archivos WHERE pedido_id = p.id) as total_archivos
              FROM pedidos p
              WHERE p.disenador_id = $1
-             ORDER BY p.created_at DESC`,
+             ORDER BY p.created_at DESC, p.id DESC`, // 🔥 ORDEN DESCENDENTE
             [userId] 
         );
 
