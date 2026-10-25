@@ -1,5 +1,4 @@
 // src/controllers/pedidoController.ts
-// src/controllers/pedidoController.ts
 import { Request, Response } from 'express';
 import pool from '../config/database.js';
 import { AuthRequest } from '../middleware/auth.js';
@@ -8,19 +7,15 @@ import { uploadToDrive } from '../services/drive-googleapis-service.js';
 import fs from 'fs';
 import path from 'path';
 import StreamZip from 'node-stream-zip';
-import sharp from 'sharp'; // 🔥 IMPORTANTE: Para crear las miniaturas
+// ❌ ELIMINADO: import sharp from 'sharp';
 
-// ========== CREAR PEDIDO ==========
 export const createPedido = async (req: AuthRequest, res: Response) => {
     try {
         const { nombre, fecha_entrega, prioridad, comentario_general } = req.body;
         const disenador_id = req.userId;
 
         if (!req.files || (req.files as Express.Multer.File[]).length === 0) {
-            return res.status(400).json({ 
-                success: false, 
-                message: 'Debes subir al menos un archivo' 
-            });
+            return res.status(400).json({ success: false, message: 'Debes subir al menos un archivo' });
         }
 
         const client = await pool.connect();
@@ -29,8 +24,7 @@ export const createPedido = async (req: AuthRequest, res: Response) => {
             await client.query('BEGIN');
 
             const pedidoResult = await client.query(
-                `INSERT INTO pedidos 
-                 (nombre, fecha_entrega, prioridad, comentario_general, disenador_id, estado) 
+                `INSERT INTO pedidos (nombre, fecha_entrega, prioridad, comentario_general, disenador_id, estado) 
                  VALUES ($1, $2, $3, $4, $5, 'pendiente') RETURNING id`,
                 [nombre, fecha_entrega, prioridad || 'media', comentario_general, disenador_id]
             );
@@ -43,7 +37,7 @@ export const createPedido = async (req: AuthRequest, res: Response) => {
                 try {
                     const ext = path.extname(file.originalname).toLowerCase();
                     
-                    // 🔥 SI ES UN ZIP
+                    // 🔥 PROCESAR ZIP
                     if (ext === '.zip') {
                         console.log(`📦 Procesando ZIP: ${file.originalname}`);
                         const zip = new StreamZip.async({ file: file.path });
@@ -62,37 +56,18 @@ export const createPedido = async (req: AuthRequest, res: Response) => {
                             // 1. Subir original a Drive
                             const driveResult = await uploadToDrive(tempExtractPath, fileNameInsideZip, 'application/octet-stream');
 
-                            // 2. Generar Miniatura (Preview)
-                            let previewUrl = null;
-                            try {
-                                const previewBuffer = await sharp(tempExtractPath)
-                                    .resize(800, null, { fit: 'inside', withoutEnlargement: true })
-                                    .jpeg({ quality: 80 })
-                                    .toBuffer();
-
-                                const previewPath = `${tempExtractPath}_preview.jpg`;
-                                fs.writeFileSync(previewPath, previewBuffer);
-                                
-                                const previewDriveResult = await uploadToDrive(previewPath, `preview_${fileNameInsideZip}.jpg`, 'image/jpeg');
-                                previewUrl = previewDriveResult.url;
-                                fs.unlinkSync(previewPath);
-                            } catch (err) {
-                                console.warn(`⚠️ No se pudo crear miniatura para ${fileNameInsideZip}`);
-                            }
-
+                            // 2. Guardar en BD (SOLO EL ORIGINAL, SIN MINIATURA)
                             const stats = fs.statSync(tempExtractPath);
                             const tamañoMb = stats.size / 1024 / 1024;
 
-                            // 3. Guardar en Supabase (Original + Preview)
                             const archivoResult = await client.query(
                                 `INSERT INTO archivos 
-                                 (nombre_original, nombre_guardado, ruta, ruta_preview, tamaño_mb, tipo, pedido_id, estado) 
-                                 VALUES ($1, $2, $3, $4, $5, $6, $7, 'listo') RETURNING id`,
+                                 (nombre_original, nombre_guardado, ruta, tamaño_mb, tipo, pedido_id, estado) 
+                                 VALUES ($1, $2, $3, $4, $5, $6, 'listo') RETURNING id`,
                                 [
                                     fileNameInsideZip, 
                                     `drive_${Date.now()}_${fileNameInsideZip}`, 
                                     driveResult.url, 
-                                    previewUrl, // 🔥 URL de la miniatura
                                     tamañoMb, 
                                     'application/octet-stream', 
                                     pedidoId
@@ -108,42 +83,23 @@ export const createPedido = async (req: AuthRequest, res: Response) => {
                         return archivosExtraidos;
 
                     } else {
-                        // 🔥 ARCHIVO NORMAL
+                        // 🔥 PROCESAR ARCHIVO NORMAL
                         console.log(`📤 Subiendo archivo: ${file.originalname}`);
                         
-                        // 1. Subir original
+                        // 1. Subir original a Drive
                         const driveResult = await uploadToDrive(file.path, file.originalname, file.mimetype);
 
-                        // 2. Generar Miniatura
-                        let previewUrl = null;
-                        try {
-                            const previewBuffer = await sharp(file.path)
-                                .resize(800, null, { fit: 'inside', withoutEnlargement: true })
-                                .jpeg({ quality: 80 })
-                                .toBuffer();
-
-                            const previewPath = `${file.path}_preview.jpg`;
-                            fs.writeFileSync(previewPath, previewBuffer);
-
-                            const previewDriveResult = await uploadToDrive(previewPath, `preview_${file.originalname}.jpg`, 'image/jpeg');
-                            previewUrl = previewDriveResult.url;
-                            fs.unlinkSync(previewPath);
-                        } catch (err) {
-                            console.warn(`⚠️ No se pudo crear miniatura para ${file.originalname}`);
-                        }
-
+                        // 2. Guardar en BD (SOLO EL ORIGINAL, SIN MINIATURA)
                         const tamañoMb = (file.size / 1024 / 1024);
 
-                        // 3. Guardar en Supabase
                         const archivoResult = await client.query(
                             `INSERT INTO archivos 
-                             (nombre_original, nombre_guardado, ruta, ruta_preview, tamaño_mb, tipo, pedido_id, estado) 
-                             VALUES ($1, $2, $3, $4, $5, $6, $7, 'listo') RETURNING id`,
+                             (nombre_original, nombre_guardado, ruta, tamaño_mb, tipo, pedido_id, estado) 
+                             VALUES ($1, $2, $3, $4, $5, $6, 'listo') RETURNING id`,
                             [
                                 file.originalname, 
                                 `drive_${Date.now()}_${file.originalname}`, 
                                 driveResult.url, 
-                                previewUrl, // 🔥 URL de la miniatura
                                 tamañoMb, 
                                 file.mimetype, 
                                 pedidoId
@@ -185,9 +141,6 @@ export const createPedido = async (req: AuthRequest, res: Response) => {
     }
 };
 
-// ... EL RESTO DE TUS FUNCIONES (getPedidos, getPedidoById, etc.) SE MANTIENEN IGUAL ...
-
-// ... El resto de tus funciones (getPedidos, etc.) se mantienen igual ...
 
 // ========== OBTENER TODOS LOS PEDIDOS (Operador) ==========
 export const getPedidos = async (req: Request, res: Response) => {
