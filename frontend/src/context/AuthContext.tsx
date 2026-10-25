@@ -8,6 +8,7 @@ import {
     obtenerNavegador,
     obtenerIP
 } from '../services/dispositivoService';
+import { socket } from '../hooks/useSocket'; // 🔥 IMPORTAMOS EL SOCKET GLOBAL
 
 interface Usuario {
   id: number;
@@ -46,6 +47,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           const userData: Usuario = JSON.parse(storedUser);
           if (userData && userData.id) {
             setUser(userData);
+            
+            // 🔥 Si hay usuario en caché, reconectamos el socket con el token
+            socket.auth = { token };
+            if (!socket.connected) {
+              socket.connect();
+            }
           } else {
             throw new Error('Usuario inválido en storage');
           }
@@ -88,6 +95,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
       setUser(response.user);
 
+      // 🔥 Conectamos el socket global pasándole el nuevo token
+      socket.auth = { token: response.token };
+      socket.connect();
+
       return response.user;
 
     } catch (error) {
@@ -101,6 +112,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     localStorage.removeItem('dispositivo_autorizado');
     localStorage.removeItem('huella_dispositivo');
     setUser(null);
+
+    // 🔥 Desconectamos el socket global al cerrar sesión
+    socket.disconnect();
   };
 
   const value: AuthContextType = {

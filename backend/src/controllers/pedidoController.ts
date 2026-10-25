@@ -6,7 +6,7 @@ import { io } from '../server.js';
 import { uploadToDrive } from '../services/drive-googleapis-service.js';
 import fs from 'fs';
 import path from 'path';
-import StreamZip from 'node-stream-zip'; 
+import StreamZip from 'node-stream-zip';
 
 // ========== CREAR PEDIDO ==========
 export const createPedido = async (req: AuthRequest, res: Response) => {
@@ -36,11 +36,14 @@ export const createPedido = async (req: AuthRequest, res: Response) => {
             const pedidoId = pedidoResult.rows[0].id;
             const files = req.files as Express.Multer.File[];
             
+            // 🔥 Usamos una ruta absoluta para evitar problemas en Render
+            const uploadsDir = path.resolve(process.env['UPLOAD_DIR'] || './uploads');
+
             const uploadPromises = files.map(async (file) => {
                 try {
                     const ext = path.extname(file.originalname).toLowerCase();
                     
-                    // 🔥 SI ES UN ZIP (Usando node-stream-zip)
+                    // 🔥 SI ES UN ZIP
                     if (ext === '.zip') {
                         console.log(`📦 Procesando archivo ZIP en streaming: ${file.originalname}`);
                         
@@ -49,31 +52,36 @@ export const createPedido = async (req: AuthRequest, res: Response) => {
                         const archivosExtraidos = [];
 
                         for (const entry of Object.values(entries)) {
-                            // Ignorar carpetas y archivos del sistema (Mac)
                             if (entry.isDirectory || entry.name.includes('__MACOSX') || entry.name.startsWith('.')) {
                                 continue;
                             }
 
                             const fileNameInsideZip = path.basename(entry.name);
-                            const tempExtractPath = path.join(process.env['UPLOAD_DIR'] || './uploads', `${Date.now()}_${fileNameInsideZip}`);
+                            // 🔥 Usamos path.resolve para garantizar la ruta absoluta en Render
+                            const tempExtractPath = path.resolve(uploadsDir, `${Date.now()}_${fileNameInsideZip}`);
 
                             console.log(`📤 Extrayendo y subiendo a Drive: ${fileNameInsideZip}`);
                             
-                            // Extraemos el archivo del ZIP al disco (Streaming a disco)
+                            // Extraemos al disco
                             await zip.extract(entry.name, tempExtractPath);
 
-                            // Subimos a Drive usando tu función original
+                            // 🔥 Verificamos si el archivo realmente existe antes de leerlo
+                            if (!fs.existsSync(tempExtractPath)) {
+                                console.error(`❌ El archivo extraído no existe en: ${tempExtractPath}`);
+                                continue;
+                            }
+
+                            // Subimos a Drive
                             const driveResult = await uploadToDrive(
                                 tempExtractPath,
                                 fileNameInsideZip,
-                                'application/octet-stream' // Tipo genérico
+                                'application/octet-stream'
                             );
 
-                            // Obtener tamaño del archivo extraído
+                            // Leemos el tamaño
                             const stats = fs.statSync(tempExtractPath);
                             const tamañoMb = stats.size / 1024 / 1024;
 
-                            // Guardar en BD
                             const archivoResult = await client.query(
                                 `INSERT INTO archivos 
                                  (nombre_original, nombre_guardado, ruta, tamaño_mb, tipo, pedido_id, estado) 
@@ -94,18 +102,17 @@ export const createPedido = async (req: AuthRequest, res: Response) => {
                                 tamaño: tamañoMb
                             });
 
-                            // Borrar archivo temporal extraído inmediatamente
+                            // Borrar archivo temporal extraído
                             if (fs.existsSync(tempExtractPath)) fs.unlinkSync(tempExtractPath);
                         }
 
-                        // Cerrar el ZIP y borrar el archivo original
                         await zip.close();
                         if (fs.existsSync(file.path)) fs.unlinkSync(file.path);
                         
                         return archivosExtraidos;
 
                     } else {
-                        // 🔥 ARCHIVO NORMAL (no zip)
+                        // 🔥 ARCHIVO NORMAL
                         console.log(`📤 Subiendo archivo a Drive: ${file.originalname}`);
                         
                         const driveResult = await uploadToDrive(
@@ -139,13 +146,12 @@ export const createPedido = async (req: AuthRequest, res: Response) => {
 
                 } catch (error) {
                     console.error(`❌ Error procesando archivo ${file.originalname}:`, error);
-                    if (fs.existsSync(file.path)) fs.unlinkSync(file.path); // Limpieza
+                    if (fs.existsSync(file.path)) fs.unlinkSync(file.path); 
                     return [];
                 }
             });
 
             const resultados = await Promise.all(uploadPromises);
-            // Aplanamos el arreglo (porque los ZIPs devuelven arrays de archivos)
             const archivosGuardados = resultados.flat();
 
             await client.query('COMMIT');
@@ -177,6 +183,8 @@ export const createPedido = async (req: AuthRequest, res: Response) => {
         });
     }
 };
+
+// ... El resto de tus funciones (getPedidos, etc.) se mantienen igual ...
 
 // ========== OBTENER TODOS LOS PEDIDOS (Operador) ==========
 export const getPedidos = async (req: Request, res: Response) => {
