@@ -25,7 +25,7 @@ export const createPedido = async (req: AuthRequest, res: Response) => {
             // 🔥 Insertamos el pedido con la hora de Lima (created_at y updated_at)
             const pedidoResult = await client.query(
                 `INSERT INTO pedidos (nombre, fecha_entrega, prioridad, comentario_general, disenador_id, estado, created_at, updated_at) 
-                 VALUES ($1, $2, $3, $4, $5, 'pendiente', NOW() AT TIME ZONE 'America/Lima', NOW() AT TIME ZONE 'America/Lima') RETURNING id`,
+                 VALUES ($1, $2, $3, $4, $5, 'pendiente', (NOW() AT TIME ZONE 'America/Lima'), (NOW() AT TIME ZONE 'America/Lima')) RETURNING id`,
                 [nombre, fecha_entrega, prioridad || 'media', comentario_general, disenador_id]
             );
 
@@ -61,11 +61,11 @@ export const createPedido = async (req: AuthRequest, res: Response) => {
                                 
                                 const driveResult = await uploadToDrive(tempExtractPath, fileNameInsideZip, 'application/octet-stream');
 
-                                // 🔥 Insertamos el archivo con la hora de Lima (created_at y updated_at)
+                                // 🔥 INSERT CORREGIDO: Se agregó el arreglo de valores
                                 const archivoResult = await client.query(
                                     `INSERT INTO archivos 
                                      (nombre_original, nombre_guardado, ruta, tamaño_mb, tipo, pedido_id, estado, created_at, updated_at) 
-                                     VALUES ($1, $2, $3, $4, $5, $6, 'listo', NOW() AT TIME ZONE 'America/Lima', NOW() AT TIME ZONE 'America/Lima') RETURNING id`,
+                                     VALUES ($1, $2, $3, $4, $5, $6, 'listo', (NOW() AT TIME ZONE 'America/Lima'), (NOW() AT TIME ZONE 'America/Lima')) RETURNING id`,
                                     [
                                         fileNameInsideZip, 
                                         `drive_${Date.now()}_${fileNameInsideZip}`, 
@@ -102,11 +102,11 @@ export const createPedido = async (req: AuthRequest, res: Response) => {
                         const driveResult = await uploadToDrive(file.path, file.originalname, file.mimetype);
                         const tamañoMb = (file.size / 1024 / 1024);
 
-                        // 🔥 Insertamos el archivo con la hora de Lima (created_at y updated_at)
+                        // 🔥 INSERT CON PARÉNTESIS
                         const archivoResult = await client.query(
                             `INSERT INTO archivos 
                              (nombre_original, nombre_guardado, ruta, tamaño_mb, tipo, pedido_id, estado, created_at, updated_at) 
-                             VALUES ($1, $2, $3, $4, $5, $6, 'listo', NOW() AT TIME ZONE 'America/Lima', NOW() AT TIME ZONE 'America/Lima') RETURNING id`,
+                             VALUES ($1, $2, $3, $4, $5, $6, 'listo', (NOW() AT TIME ZONE 'America/Lima'), (NOW() AT TIME ZONE 'America/Lima')) RETURNING id`,
                             [
                                 file.originalname, 
                                 `drive_${Date.now()}_${file.originalname}`, 
